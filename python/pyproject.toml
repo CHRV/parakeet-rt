@@ -1,0 +1,30 @@
+[project]
+name = "live"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.118.0",
+    "fastrtc[vad]>=0.0.33",
+    "google-genai>=1.45.0",
+    "modal>=1.1.4",
+    "pydub>=0.25.1",
+]
+
+[tool.uv]
+constraint-dependencies = [
+    "propcache<0.4", # ref leak https://github.com/aio-libs/propcache/issues/159
+]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+torchvision = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[dependency-groups]
+dev = ["ruff>=0.13.3"]

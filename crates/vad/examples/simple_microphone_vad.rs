@@ -39,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut vad, mut events) = StreamingVad::new(silero, params);
 
     // Audio processing channel
-    let (audio_tx, mut audio_rx) = mpsc::unbounded_channel();
+    let (audio_tx, mut audio_rx) = mpsc::unbounded_channel::<Vec<i16>>();
 
     // Shutdown flag
     let running = Arc::new(AtomicBool::new(true));
@@ -75,25 +75,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::select! {
             // Process audio
             Some(audio) = audio_rx.recv() => {
-                vad.process_audio(&audio).await?;
+                vad.process_audio(&audio)?;
             }
 
-            // Handle VAD events
-            Some(event) = events.recv() => {
-                match event {
-                    VadEvent::SpeechStarted { .. } => {
-                        println!("🟢 Speech started!");
-                    }
-                    VadEvent::SpeechEnded { segment } => {
-                        speech_count += 1;
-                        println!("🔴 Speech ended! Duration: {:.2}s", segment.duration_seconds());
+            // Handle VAD events (poll for events)
+            _ = sleep(Duration::from_millis(10)) => {
+                while let Ok(event) = events.pop() {
+                    match event {
+                        VadEvent::SpeechStarted { .. } => {
+                            println!("🟢 Speech started!");
+                        }
+                        VadEvent::SpeechEnded { segment } => {
+                            speech_count += 1;
+                            println!("🔴 Speech ended! Duration: {:.2}s", segment.duration_seconds());
 
-                        // Save to file
-                        let filename = format!("recordings/speech_{:03}.wav", speech_count);
-                        save_audio(&segment.audio_data, &filename, 16000)?;
-                        println!("💾 Saved: {}", filename);
+                            // Save to file
+                            let filename = format!("recordings/speech_{:03}.wav", speech_count);
+                            save_audio(&segment.audio_data, &filename, 16000)?;
+                            println!("💾 Saved: {}", filename);
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
 

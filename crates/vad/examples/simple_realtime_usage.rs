@@ -26,41 +26,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Create the streaming VAD
-    let (mut streaming_vad, mut event_receiver) = StreamingVad::new(silero, params);
+    let (mut streaming_vad, mut event_consumer) = StreamingVad::new(silero, params);
 
     // Spawn a task to handle VAD events
     let event_handler = tokio::spawn(async move {
         println!("📡 Listening for speech events...\n");
 
-        while let Some(event) = event_receiver.recv().await {
-            match event {
-                VadEvent::SpeechStarted { start_sample } => {
-                    println!("🟢 Speech STARTED at sample {}", start_sample);
-                }
-                VadEvent::SpeechOngoing { duration_ms, .. } => {
-                    // Print ongoing speech updates (you might want to throttle this in real apps)
-                    if (duration_ms as u32) % 500 == 0 {
-                        // Every 500ms
-                        print!("\r🗣️  Speaking... {:.1}s", duration_ms / 1000.0);
-                        std::io::Write::flush(&mut std::io::stdout()).unwrap();
+        loop {
+            // Poll for events with a small delay to avoid busy waiting
+            match event_consumer.pop() {
+                Ok(event) => {
+                    match event {
+                        VadEvent::SpeechStarted { start_sample } => {
+                            println!("🟢 Speech STARTED at sample {}", start_sample);
+                        }
+                        VadEvent::SpeechOngoing { duration_ms, .. } => {
+                            // Print ongoing speech updates (you might want to throttle this in real apps)
+                            if (duration_ms as u32) % 500 == 0 {
+                                // Every 500ms
+                                print!("\r🗣️  Speaking... {:.1}s", duration_ms / 1000.0);
+                                std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                            }
+                        }
+                        VadEvent::SpeechEnded { segment } => {
+                            println!(
+                                "\n🔴 Speech ENDED: {:.2}s duration",
+                                segment.duration_seconds()
+                            );
+                            println!("   📊 Audio samples captured: {}", segment.audio_data.len());
+
+                            // Here you would typically:
+                            // - Save the audio segment to a file
+                            // - Send it to a speech recognition service
+                            // - Process it further
+
+                            if segment.duration_seconds() > 1.0 {
+                                println!("   ✨ Long enough for transcription!");
+                            }
+                            println!();
+                        }
                     }
                 }
-                VadEvent::SpeechEnded { segment } => {
-                    println!(
-                        "\n🔴 Speech ENDED: {:.2}s duration",
-                        segment.duration_seconds()
-                    );
-                    println!("   📊 Audio samples captured: {}", segment.audio_data.len());
-
-                    // Here you would typically:
-                    // - Save the audio segment to a file
-                    // - Send it to a speech recognition service
-                    // - Process it further
-
-                    if segment.duration_seconds() > 1.0 {
-                        println!("   ✨ Long enough for transcription!");
-                    }
-                    println!();
+                Err(_) => {
+                    // No events available, sleep briefly to avoid busy waiting
+                    sleep(Duration::from_millis(10)).await;
                 }
             }
         }
@@ -77,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     simulate_realtime_audio(&mut streaming_vad).await?;
 
     // Finalize any ongoing speech
-    streaming_vad.finalize().await;
+    streaming_vad.finalize();
 
     // Give the event handler time to process final events
     sleep(Duration::from_millis(100)).await;
@@ -96,7 +105,7 @@ async fn simulate_realtime_audio(vad: &mut StreamingVad) -> Result<(), ort::Erro
     println!("   Phase 1: Silence (should not trigger speech detection)");
     for i in 0..10 {
         let silence = vec![0i16; chunk_size];
-        vad.process_audio(&silence).await?;
+        vad.process_audio(&silence)?;
 
         if i % 3 == 0 {
             print!(".");
@@ -118,7 +127,7 @@ async fn simulate_realtime_audio(vad: &mut StreamingVad) -> Result<(), ort::Erro
             })
             .collect();
 
-        vad.process_audio(&speech_chunk).await?;
+        vad.process_audio(&speech_chunk)?;
 
         if i % 3 == 0 {
             print!("♪");
@@ -131,7 +140,7 @@ async fn simulate_realtime_audio(vad: &mut StreamingVad) -> Result<(), ort::Erro
     println!("   Phase 3: Silence again (should end speech detection)");
     for i in 0..5 {
         let silence = vec![0i16; chunk_size];
-        vad.process_audio(&silence).await?;
+        vad.process_audio(&silence)?;
 
         if i % 2 == 0 {
             print!(".");

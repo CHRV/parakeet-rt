@@ -1,6 +1,5 @@
 use crate::{silero, utils};
-use std::collections::VecDeque;
-use tokio::sync::mpsc;
+use rtrb::{Consumer, Producer, RingBuffer};
 use tracing::debug;
 
 const DEBUG_SPEECH_PROB: bool = true;
@@ -38,10 +37,13 @@ pub struct StreamingVad {
     silero: silero::Silero,
     params: Params,
     state: State,
-    audio_buffer: VecDeque<i16>,
-    speech_audio_buffer: VecDeque<i16>,
-    event_sender: mpsc::UnboundedSender<VadEvent>,
-    max_buffer_size: usize,
+    audio_consumer: Consumer<i16>,
+    audio_producer: Producer<i16>,
+    speech_consumer: Consumer<i16>,
+    speech_producer: Producer<i16>,
+    event_producer: Producer<VadEvent>,
+    rx_buffer_size: usize,
+    tx_buffer_size: usize,
 }
 
 // Exact same Params struct as vad.rs
@@ -118,12 +120,12 @@ impl State {
         Default::default()
     }
 
-    async fn update(
+    fn update(
         &mut self,
         params: &Params,
         speech_prob: f32,
-        event_sender: &mpsc::UnboundedSender<VadEvent>,
-        speech_buffer: &VecDeque<i16>,
+        event_producer: &mut Producer<VadEvent>,
+        speech_consumer: &Consumer<i16>,
     ) {
         self.current_sample += params.frame_size_samples;
 
@@ -143,7 +145,7 @@ impl State {
                     self.current_sample as i64 - params.frame_size_samples as i64;
 
                 // Emit speech started event
-                let _ = event_sender.send(VadEvent::SpeechStarted {
+                let _ = event_producer.push(VadEvent::SpeechStarted {
                     start_sample: self.current_speech.start as usize,
                 });
             } else {
@@ -152,7 +154,7 @@ impl State {
                     / params.sample_rate as f32)
                     * 1000.0;
 
-                let _ = event_sender.send(VadEvent::SpeechOngoing {
+                let _ = event_producer.push(VadEvent::SpeechOngoing {
                     current_sample: self.current_sample,
                     duration_ms,
                 });
@@ -166,7 +168,7 @@ impl State {
         {
             if self.prev_end > 0 {
                 self.current_speech.end = self.prev_end as _;
-                self.take_speech(params, event_sender, speech_buffer).await;
+                self.take_speech(params, event_producer, speech_consumer);
                 if self.next_start < self.prev_end {
                     self.triggered = false
                 } else {
@@ -177,7 +179,7 @@ impl State {
                 self.temp_end = 0;
             } else {
                 self.current_speech.end = self.current_sample as _;
-                self.take_speech(params, event_sender, speech_buffer).await;
+                self.take_speech(params, event_producer, speech_consumer);
                 self.prev_end = 0;
                 self.next_start = 0;
                 self.temp_end = 0;
@@ -212,7 +214,7 @@ impl State {
                 if self.current_speech.end - self.current_speech.start
                     > params.min_speech_samples as _
                 {
-                    self.take_speech(params, event_sender, speech_buffer).await;
+                    self.take_speech(params, event_producer, speech_buffer);
                     self.prev_end = 0;
                     self.next_start = 0;
                     self.temp_end = 0;
@@ -222,17 +224,17 @@ impl State {
         }
     }
 
-    async fn take_speech(
+    fn take_speech(
         &mut self,
         params: &Params,
-        event_sender: &mpsc::UnboundedSender<VadEvent>,
-        speech_buffer: &VecDeque<i16>,
+        event_producer: &mut Producer<VadEvent>,
+        speech_consumer: &Consumer<i16>,
     ) {
         let speech = std::mem::take(&mut self.current_speech);
 
         // Extract audio data for this speech segment
         let audio_data = extract_speech_segment(
-            speech_buffer,
+            speech_consumer,
             speech.start as usize,
             speech.end as usize,
             self.current_sample,
@@ -248,21 +250,21 @@ impl State {
             sample_rate: params.sample_rate,
         };
 
-        let _ = event_sender.send(VadEvent::SpeechEnded { segment });
+        let _ = event_producer.push(VadEvent::SpeechEnded { segment });
 
         self.speeches.push(speech);
     }
 
-    async fn check_for_last_speech(
+    fn check_for_last_speech(
         &mut self,
         last_sample: usize,
         params: &Params,
-        event_sender: &mpsc::UnboundedSender<VadEvent>,
-        speech_buffer: &VecDeque<i16>,
+        event_producer: &mut Producer<VadEvent>,
+        speech_consumer: &Consumer<i16>,
     ) {
         if self.current_speech.start > 0 {
             self.current_speech.end = last_sample as _;
-            self.take_speech(params, event_sender, speech_buffer).await;
+            self.take_speech(params, event_producer, speech_consumer);
             self.prev_end = 0;
             self.next_start = 0;
             self.temp_end = 0;
@@ -324,11 +326,8 @@ fn extract_speech_segment(
 }
 
 impl StreamingVad {
-    pub fn new(
-        silero: silero::Silero,
-        params: utils::VadParams,
-    ) -> (Self, mpsc::UnboundedReceiver<VadEvent>) {
-        let (event_sender, event_receiver) = mpsc::unbounded_channel();
+    pub fn new(silero: silero::Silero, params: utils::VadParams) -> (Self, Consumer<VadEvent>) {
+        let (event_producer, event_consumer) = RingBuffer::new(1024);
         let params = Params::from(params);
         let max_buffer_size = params.sample_rate * 30; // Keep 30 seconds of audio max
 
@@ -338,14 +337,14 @@ impl StreamingVad {
             state: State::new(),
             audio_buffer: VecDeque::new(),
             speech_audio_buffer: VecDeque::new(),
-            event_sender,
+            event_producer,
             max_buffer_size,
         };
 
-        (vad, event_receiver)
+        (vad, event_consumer)
     }
 
-    pub async fn process_audio(&mut self, audio_chunk: &[i16]) -> Result<(), ort::Error> {
+    pub fn process_audio(&mut self, audio_chunk: &[i16]) -> Result<(), ort::Error> {
         // Add to audio buffers
         self.audio_buffer.extend(audio_chunk);
         self.speech_audio_buffer.extend(audio_chunk);
@@ -361,22 +360,20 @@ impl StreamingVad {
                 .audio_buffer
                 .drain(..self.params.frame_size_samples)
                 .collect();
-            self.process_frame(&frame).await?;
+            self.process_frame(&frame)?;
         }
 
         Ok(())
     }
 
-    async fn process_frame(&mut self, frame: &[i16]) -> Result<(), ort::Error> {
+    fn process_frame(&mut self, frame: &[i16]) -> Result<(), ort::Error> {
         let speech_prob = self.silero.calc_level(frame)?;
-        self.state
-            .update(
-                &self.params,
-                speech_prob,
-                &self.event_sender,
-                &self.speech_audio_buffer,
-            )
-            .await;
+        self.state.update(
+            &self.params,
+            speech_prob,
+            &mut self.event_producer,
+            &self.speech_audio_buffer,
+        );
         Ok(())
     }
 
@@ -387,17 +384,15 @@ impl StreamingVad {
         self.speech_audio_buffer.clear();
     }
 
-    pub async fn finalize(&mut self) {
+    pub fn finalize(&mut self) {
         // Check for any ongoing speech at the end
         let total_samples = self.state.current_sample;
-        self.state
-            .check_for_last_speech(
-                total_samples,
-                &self.params,
-                &self.event_sender,
-                &self.speech_audio_buffer,
-            )
-            .await;
+        self.state.check_for_last_speech(
+            total_samples,
+            &self.params,
+            &mut self.event_producer,
+            &self.speech_audio_buffer,
+        );
     }
 
     pub fn speeches(&self) -> &[utils::TimeStamp] {
@@ -410,23 +405,23 @@ mod tests {
     use super::*;
     use crate::utils::SampleRate;
 
-    #[tokio::test]
-    async fn test_streaming_vad_basic() {
+    #[test]
+    fn test_streaming_vad_basic() {
         let silero = silero::Silero::new(SampleRate::SixteenkHz, "../../models/silero_vad.onnx")
             .expect("Failed to create Silero model");
 
         let params = utils::VadParams::default();
-        let (mut vad, mut event_receiver) = StreamingVad::new(silero, params);
+        let (mut vad, mut event_consumer) = StreamingVad::new(silero, params);
 
         // Test with silence
         let silence = vec![0i16; 1600]; // 100ms of silence
         vad.process_audio(&silence)
-            .await
             .expect("Failed to process silence");
 
         // Should not receive any events for silence
-        let result =
-            tokio::time::timeout(std::time::Duration::from_millis(10), event_receiver.recv()).await;
-        assert!(result.is_err(), "Should not receive events for silence");
+        assert!(
+            event_consumer.pop().is_err(),
+            "Should not receive events for silence"
+        );
     }
 }

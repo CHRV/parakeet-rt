@@ -102,7 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 audio_chunk = audio_receiver.recv() => {
                     match audio_chunk {
                         Some(chunk) => {
-                            if let Err(e) = vad.process_audio(&chunk).await {
+                            if let Err(e) = vad.process_audio(&chunk) {
                                 eprintln!("❌ VAD processing error: {}", e);
                                 break;
                             }
@@ -124,7 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Finalize any ongoing speech
-        vad.finalize().await;
+        vad.finalize();
         println!("🔄 VAD processing finalized");
     });
 
@@ -135,48 +135,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         while event_running.load(Ordering::Relaxed) {
             tokio::select! {
-                // Handle VAD events
-                event = vad_events.recv() => {
-                    match event {
-                        Some(VadEvent::SpeechStarted { start_sample }) => {
-                            let timestamp = get_timestamp();
-                            println!("🟢 [{}] Speech STARTED at sample {}", timestamp, start_sample);
-                        }
-
-                        Some(VadEvent::SpeechOngoing { duration_ms, .. }) => {
-                            // Print ongoing speech every 500ms to avoid spam
-                            if (duration_ms as u32) % 500 < 100 { // Approximate every 500ms
-                                print!("\r🗣️  Speaking... {:.1}s", duration_ms / 1000.0);
-                                std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                // Handle VAD events (poll for events)
+                _ = sleep(Duration::from_millis(10)) => {
+                    while let Ok(event) = vad_events.pop() {
+                        match event {
+                            VadEvent::SpeechStarted { start_sample } => {
+                                let timestamp = get_timestamp();
+                                println!("🟢 [{}] Speech STARTED at sample {}", timestamp, start_sample);
                             }
-                        }
 
-                        Some(VadEvent::SpeechEnded { segment }) => {
-                            speech_counter += 1;
-                            let timestamp = get_timestamp();
-                            println!("\n🔴 [{}] Speech ENDED: {:.2}s duration",
-                                   timestamp, segment.duration_seconds());
-
-                            // Save speech segment to file
-                            match save_speech_segment(&segment, speech_counter).await {
-                                Ok(filename) => {
-                                    println!("💾 Saved speech segment to: {}", filename);
-                                }
-                                Err(e) => {
-                                    eprintln!("❌ Failed to save speech segment: {}", e);
+                            VadEvent::SpeechOngoing { duration_ms, .. } => {
+                                // Print ongoing speech every 500ms to avoid spam
+                                if (duration_ms as u32) % 500 < 100 { // Approximate every 500ms
+                                    print!("\r🗣️  Speaking... {:.1}s", duration_ms / 1000.0);
+                                    std::io::Write::flush(&mut std::io::stdout()).unwrap();
                                 }
                             }
 
-                            println!("   📊 Segment info:");
-                            println!("      - Duration: {:.2}s", segment.duration_seconds());
-                            println!("      - Samples: {} -> {}", segment.start_sample, segment.end_sample);
-                            println!("      - Audio data: {} samples", segment.audio_data.len());
-                            println!();
-                        }
+                            VadEvent::SpeechEnded { segment } => {
+                                speech_counter += 1;
+                                let timestamp = get_timestamp();
+                                println!("\n🔴 [{}] Speech ENDED: {:.2}s duration",
+                                       timestamp, segment.duration_seconds());
 
-                        None => {
-                            println!("📡 VAD event channel closed");
-                            break;
+                                // Save speech segment to file
+                                match save_speech_segment(&segment, speech_counter).await {
+                                    Ok(filename) => {
+                                        println!("💾 Saved speech segment to: {}", filename);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("❌ Failed to save speech segment: {}", e);
+                                    }
+                                }
+
+                                println!("   📊 Segment info:");
+                                println!("      - Duration: {:.2}s", segment.duration_seconds());
+                                println!("      - Samples: {} -> {}", segment.start_sample, segment.end_sample);
+                                println!("      - Audio data: {} samples", segment.audio_data.len());
+                                println!();
+                            }
                         }
                     }
                 }

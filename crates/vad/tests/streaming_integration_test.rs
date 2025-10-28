@@ -1,6 +1,7 @@
 use hound::WavReader;
+use rtrb::Consumer;
 use std::time::Duration;
-use tokio::time::timeout;
+use tokio::time::sleep;
 use vad::{
     StreamingVad, VadEvent,
     silero::Silero,
@@ -15,8 +16,7 @@ fn load_wav_samples(path: &str) -> Result<Vec<i16>, Box<dyn std::error::Error>> 
     Ok(samples?)
 }
 
-async fn create_streaming_vad()
--> Result<(StreamingVad, tokio::sync::mpsc::UnboundedReceiver<VadEvent>), ort::Error> {
+fn create_streaming_vad() -> Result<(StreamingVad, Consumer<VadEvent>), ort::Error> {
     let silero = Silero::new(SampleRate::SixteenkHz, MODEL_PATH)?;
     let params = VadParams {
         frame_size: 64,
@@ -32,9 +32,8 @@ async fn create_streaming_vad()
 
 #[tokio::test]
 async fn test_streaming_speech_detection_sample_1() {
-    let (mut vad, mut event_receiver) = create_streaming_vad()
-        .await
-        .expect("Failed to create streaming VAD");
+    let (mut vad, mut event_consumer) =
+        create_streaming_vad().expect("Failed to create streaming VAD");
 
     let samples =
         load_wav_samples("tests/audio/sample_1.wav").expect("Failed to load sample_1.wav");
@@ -46,20 +45,22 @@ async fn test_streaming_speech_detection_sample_1() {
     // Process audio chunks
     for chunk in samples.chunks(chunk_size) {
         vad.process_audio(chunk)
-            .await
             .expect("Failed to process audio chunk");
 
-        // Collect any events that arrive quickly
-        while let Ok(Some(event)) = timeout(Duration::from_millis(1), event_receiver.recv()).await {
+        // Collect any events that are available
+        while let Ok(event) = event_consumer.pop() {
             events.push(event);
         }
     }
 
     // Finalize to ensure any ongoing speech is completed
-    vad.finalize().await;
+    vad.finalize();
+
+    // Give a small delay for final events to be processed
+    sleep(Duration::from_millis(10)).await;
 
     // Collect final events
-    while let Ok(Some(event)) = timeout(Duration::from_millis(10), event_receiver.recv()).await {
+    while let Ok(event) = event_consumer.pop() {
         events.push(event);
     }
 
@@ -110,30 +111,29 @@ async fn test_streaming_speech_detection_sample_1() {
 
 #[tokio::test]
 async fn test_streaming_no_speech_detection() {
-    let (mut vad, mut event_receiver) = create_streaming_vad()
-        .await
-        .expect("Failed to create streaming VAD");
+    let (mut vad, mut event_consumer) =
+        create_streaming_vad().expect("Failed to create streaming VAD");
 
     // Create pure silence
     let silence_samples = vec![0i16; 16000]; // 1 second of silence
 
     vad.process_audio(&silence_samples)
-        .await
         .expect("Failed to process silence");
-    vad.finalize().await;
+    vad.finalize();
 
     // Should not receive any speech events
-    let result = timeout(Duration::from_millis(100), event_receiver.recv()).await;
-    assert!(result.is_err(), "Should not receive events for silence");
+    assert!(
+        event_consumer.pop().is_err(),
+        "Should not receive events for silence"
+    );
 
     println!("No events received for silence (as expected)");
 }
 
 #[tokio::test]
 async fn test_streaming_multiple_speech_segments() {
-    let (mut vad, mut event_receiver) = create_streaming_vad()
-        .await
-        .expect("Failed to create streaming VAD");
+    let (mut vad, mut event_consumer) =
+        create_streaming_vad().expect("Failed to create streaming VAD");
 
     let mut events = Vec::new();
 
@@ -143,7 +143,6 @@ async fn test_streaming_multiple_speech_segments() {
     // Silence
     let silence = vec![0i16; chunk_size * 4]; // 200ms silence
     vad.process_audio(&silence)
-        .await
         .expect("Failed to process silence");
 
     // First speech segment (simulated with noise)
@@ -153,11 +152,10 @@ async fn test_streaming_multiple_speech_segments() {
             .map(|_| (rand::random::<f32>() * 2000.0 - 1000.0) as i16)
             .collect();
         vad.process_audio(&speech_chunk)
-            .await
             .expect("Failed to process speech");
 
         // Collect events
-        while let Ok(Some(event)) = timeout(Duration::from_millis(1), event_receiver.recv()).await {
+        while let Ok(event) = event_consumer.pop() {
             events.push(event);
         }
     }
@@ -165,11 +163,10 @@ async fn test_streaming_multiple_speech_segments() {
     // Silence between segments
     let silence = vec![0i16; chunk_size * 6]; // 300ms silence
     vad.process_audio(&silence)
-        .await
         .expect("Failed to process silence");
 
     // Collect events after silence
-    while let Ok(Some(event)) = timeout(Duration::from_millis(10), event_receiver.recv()).await {
+    while let Ok(event) = event_consumer.pop() {
         events.push(event);
     }
 
@@ -180,19 +177,21 @@ async fn test_streaming_multiple_speech_segments() {
             .map(|_| (rand::random::<f32>() * 1800.0 - 900.0) as i16)
             .collect();
         vad.process_audio(&speech_chunk)
-            .await
             .expect("Failed to process speech");
 
         // Collect events
-        while let Ok(Some(event)) = timeout(Duration::from_millis(1), event_receiver.recv()).await {
+        while let Ok(event) = event_consumer.pop() {
             events.push(event);
         }
     }
 
-    vad.finalize().await;
+    vad.finalize();
+
+    // Give a small delay for final events to be processed
+    sleep(Duration::from_millis(10)).await;
 
     // Collect final events
-    while let Ok(Some(event)) = timeout(Duration::from_millis(10), event_receiver.recv()).await {
+    while let Ok(event) = event_consumer.pop() {
         events.push(event);
     }
 
@@ -230,9 +229,8 @@ async fn test_streaming_multiple_speech_segments() {
 
 #[tokio::test]
 async fn test_streaming_real_audio_files() {
-    let (mut vad, mut event_receiver) = create_streaming_vad()
-        .await
-        .expect("Failed to create streaming VAD");
+    let (mut vad, mut event_consumer) =
+        create_streaming_vad().expect("Failed to create streaming VAD");
 
     // Test with birds.wav (should not detect speech)
     let birds_samples =
@@ -243,17 +241,19 @@ async fn test_streaming_real_audio_files() {
 
     for chunk in birds_samples.chunks(chunk_size) {
         vad.process_audio(chunk)
-            .await
             .expect("Failed to process birds audio");
 
-        while let Ok(Some(event)) = timeout(Duration::from_millis(1), event_receiver.recv()).await {
+        while let Ok(event) = event_consumer.pop() {
             events.push(event);
         }
     }
 
-    vad.finalize().await;
+    vad.finalize();
 
-    while let Ok(Some(event)) = timeout(Duration::from_millis(10), event_receiver.recv()).await {
+    // Give a small delay for final events to be processed
+    sleep(Duration::from_millis(10)).await;
+
+    while let Ok(event) = event_consumer.pop() {
         events.push(event);
     }
 

@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Create the streaming VAD
-    let (mut streaming_vad, mut event_receiver) = StreamingVad::new(silero, params);
+    let (mut streaming_vad, mut event_consumer) = StreamingVad::new(silero, params);
 
     // Create channels for audio input and shutdown signaling
     let (audio_sender, mut audio_receiver) = mpsc::unbounded_channel::<Vec<i16>>();
@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 audio_chunk = audio_receiver.recv() => {
                     match audio_chunk {
                         Some(chunk) => {
-                            if let Err(e) = streaming_vad.process_audio(&chunk).await {
+                            if let Err(e) = streaming_vad.process_audio(&chunk) {
                                 eprintln!("VAD processing error: {}", e);
                                 break;
                             }
@@ -57,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ = shutdown_receiver.changed() => {
                     if *shutdown_receiver.borrow() {
                         println!("Shutting down VAD processor");
-                        streaming_vad.finalize().await;
+                        streaming_vad.finalize();
                         break;
                     }
                 }
@@ -67,29 +67,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Spawn the event handling task
     let event_handle = tokio::spawn(async move {
-        while let Some(event) = event_receiver.recv().await {
-            match event {
-                VadEvent::SpeechStarted { start_sample } => {
-                    println!("🎤 Speech started at sample {}", start_sample);
-                }
-                VadEvent::SpeechOngoing {
-                    current_sample,
-                    duration_ms,
-                } => {
-                    print!("\r🗣️  Speech ongoing: {:.1}s", duration_ms / 1000.0);
-                    std::io::Write::flush(&mut std::io::stdout()).unwrap();
-                }
-                VadEvent::SpeechEnded { segment } => {
-                    println!(
-                        "\n✅ Speech ended: {:.2}s duration, {} audio samples",
-                        segment.duration_seconds(),
-                        segment.audio_data.len()
-                    );
+        loop {
+            // Poll for events with a small delay to avoid busy waiting
+            match event_consumer.pop() {
+                Ok(event) => {
+                    match event {
+                        VadEvent::SpeechStarted { start_sample } => {
+                            println!("🎤 Speech started at sample {}", start_sample);
+                        }
+                        VadEvent::SpeechOngoing { duration_ms, .. } => {
+                            print!("\r🗣️  Speech ongoing: {:.1}s", duration_ms / 1000.0);
+                            std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                        }
+                        VadEvent::SpeechEnded { segment } => {
+                            println!(
+                                "\n✅ Speech ended: {:.2}s duration, {} audio samples",
+                                segment.duration_seconds(),
+                                segment.audio_data.len()
+                            );
 
-                    // Here you could save the audio segment, send it for transcription, etc.
-                    if !segment.audio_data.is_empty() {
-                        println!("   Audio data available for processing");
+                            // Here you could save the audio segment, send it for transcription, etc.
+                            if !segment.audio_data.is_empty() {
+                                println!("   Audio data available for processing");
+                            }
+                        }
                     }
+                }
+                Err(_) => {
+                    // No events available, sleep briefly to avoid busy waiting
+                    sleep(Duration::from_millis(10)).await;
                 }
             }
         }

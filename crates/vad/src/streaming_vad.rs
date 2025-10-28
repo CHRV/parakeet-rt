@@ -1,5 +1,6 @@
 use crate::{silero, utils};
 use rtrb::{Consumer, Producer, RingBuffer};
+use std::collections::VecDeque;
 use tracing::debug;
 
 const DEBUG_SPEECH_PROB: bool = true;
@@ -37,13 +38,10 @@ pub struct StreamingVad {
     silero: silero::Silero,
     params: Params,
     state: State,
-    audio_consumer: Consumer<i16>,
-    audio_producer: Producer<i16>,
-    speech_consumer: Consumer<i16>,
-    speech_producer: Producer<i16>,
+    audio_buffer: VecDeque<i16>,
+    speech_audio_buffer: VecDeque<i16>,
     event_producer: Producer<VadEvent>,
-    rx_buffer_size: usize,
-    tx_buffer_size: usize,
+    max_buffer_size: usize,
 }
 
 // Exact same Params struct as vad.rs
@@ -125,7 +123,7 @@ impl State {
         params: &Params,
         speech_prob: f32,
         event_producer: &mut Producer<VadEvent>,
-        speech_consumer: &Consumer<i16>,
+        speech_buffer: &VecDeque<i16>,
     ) {
         self.current_sample += params.frame_size_samples;
 
@@ -168,7 +166,7 @@ impl State {
         {
             if self.prev_end > 0 {
                 self.current_speech.end = self.prev_end as _;
-                self.take_speech(params, event_producer, speech_consumer);
+                self.take_speech(params, event_producer, speech_buffer);
                 if self.next_start < self.prev_end {
                     self.triggered = false
                 } else {
@@ -179,7 +177,7 @@ impl State {
                 self.temp_end = 0;
             } else {
                 self.current_speech.end = self.current_sample as _;
-                self.take_speech(params, event_producer, speech_consumer);
+                self.take_speech(params, event_producer, speech_buffer);
                 self.prev_end = 0;
                 self.next_start = 0;
                 self.temp_end = 0;
@@ -228,13 +226,13 @@ impl State {
         &mut self,
         params: &Params,
         event_producer: &mut Producer<VadEvent>,
-        speech_consumer: &Consumer<i16>,
+        speech_buffer: &VecDeque<i16>,
     ) {
         let speech = std::mem::take(&mut self.current_speech);
 
         // Extract audio data for this speech segment
         let audio_data = extract_speech_segment(
-            speech_consumer,
+            speech_buffer,
             speech.start as usize,
             speech.end as usize,
             self.current_sample,
@@ -260,11 +258,11 @@ impl State {
         last_sample: usize,
         params: &Params,
         event_producer: &mut Producer<VadEvent>,
-        speech_consumer: &Consumer<i16>,
+        speech_buffer: &VecDeque<i16>,
     ) {
         if self.current_speech.start > 0 {
             self.current_speech.end = last_sample as _;
-            self.take_speech(params, event_producer, speech_consumer);
+            self.take_speech(params, event_producer, speech_buffer);
             self.prev_end = 0;
             self.next_start = 0;
             self.temp_end = 0;

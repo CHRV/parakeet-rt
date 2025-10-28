@@ -60,10 +60,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let vad_params = VadParams {
         frame_size: 64,               // 64ms frames for responsiveness
         threshold: 0.4,               // Speech detection threshold
-        min_silence_duration_ms: 500, // 500ms silence to end speech
-        speech_pad_ms: 100,           // 100ms padding around speech
+        min_silence_duration_ms: 100, // 200ms silence to end speech
+        speech_pad_ms: 30,            // 100ms padding around speech
         min_speech_duration_ms: 300,  // Minimum 300ms for valid speech
-        max_speech_duration_s: 30.0,  // Maximum 30 seconds per segment
+        max_speech_duration_s: 2.0,   // Maximum 2 seconds per segment
         sample_rate: 16000,           // 16kHz sample rate
     };
 

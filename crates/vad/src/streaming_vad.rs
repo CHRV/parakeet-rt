@@ -1,6 +1,7 @@
 use crate::{silero, utils};
 use std::collections::VecDeque;
 use tokio::sync::mpsc;
+use tracing::debug;
 
 const DEBUG_SPEECH_PROB: bool = true;
 
@@ -194,10 +195,13 @@ impl State {
         }
 
         if self.triggered && speech_prob < (params.threshold - 0.15) {
-            self.debug(speech_prob, params, "end");
             if self.temp_end == 0 {
                 self.temp_end = self.current_sample;
+                self.debug(speech_prob, params, "end"); // Only debug on first "end" detection
+            } else {
+                self.debug(speech_prob, params, "silence"); // Debug as silence for subsequent frames
             }
+
             if self.current_sample.saturating_sub(self.temp_end)
                 > params.min_silence_samples_at_max_speech
             {
@@ -275,7 +279,7 @@ impl State {
                 } else {
                     0
                 } as f32; // minus window_size_samples to get precise start time point.
-            println!(
+            debug!(
                 "[{:10}: {:.3} s ({:.3}) {:8}]",
                 title,
                 speech / params.sample_rate as f32,

@@ -1,9 +1,9 @@
 use hound::WavReader;
-use rtrb::Consumer;
+use rtrb::{Consumer, Producer};
 use std::time::Duration;
 use tokio::time::sleep;
 use vad::{
-    StreamingVad, VadEvent,
+    StreamingVad,
     silero::Silero,
     utils::{SampleRate, VadParams},
 };
@@ -16,60 +16,78 @@ fn load_wav_samples(path: &str) -> Result<Vec<i16>, Box<dyn std::error::Error>> 
     Ok(samples?)
 }
 
-fn create_streaming_vad() -> Result<(StreamingVad, Consumer<VadEvent>), ort::Error> {
+fn create_streaming_vad() -> Result<(StreamingVad, Producer<i16>, Consumer<i16>), ort::Error> {
     let silero = Silero::new(SampleRate::SixteenkHz, MODEL_PATH)?;
     let params = VadParams::default();
     Ok(StreamingVad::new(silero, params))
 }
 
-async fn process_audio_and_collect_events(
+async fn process_audio_and_collect_speech(
     vad: &mut StreamingVad,
     samples: &[i16],
-    event_consumer: &mut Consumer<VadEvent>,
-) -> Vec<VadEvent> {
+    audio_producer: &mut Producer<i16>,
+    speech_consumer: &mut Consumer<i16>,
+) -> Vec<i16> {
     let chunk_size = 1600; // 100ms at 16kHz
-    let mut events = Vec::new();
+    let mut speech_samples = Vec::new();
 
     // Process audio in chunks to simulate streaming
     for chunk in samples.chunks(chunk_size) {
-        vad.process_audio(chunk)
-            .expect("Failed to process audio chunk");
+        // Push audio samples to VAD input ring buffer
+        for sample in chunk {
+            let _ = audio_producer.push(*sample);
+        }
 
-        // Collect any events that are available
-        while let Ok(event) = event_consumer.pop() {
-            events.push(event);
+        // Process available frames through VAD
+        vad.process_audio().expect("Failed to process audio");
+
+        // Collect speech samples from VAD output
+        while let Ok(sample) = speech_consumer.pop() {
+            speech_samples.push(sample);
         }
     }
 
     // Finalize to ensure any ongoing speech is completed
     vad.finalize();
 
-    // Give a small delay for final events to be processed
+    // Give a small delay for final processing
     sleep(Duration::from_millis(10)).await;
 
-    // Collect final events
-    while let Ok(event) = event_consumer.pop() {
-        events.push(event);
+    // Collect any remaining speech samples
+    while let Ok(sample) = speech_consumer.pop() {
+        speech_samples.push(sample);
     }
 
-    events
+    speech_samples
 }
 
 #[tokio::test]
 async fn test_speech_detection_sample_1() {
-    let (mut vad, mut event_consumer) =
+    let (mut vad, mut audio_producer, mut speech_consumer) =
         create_streaming_vad().expect("Failed to create streaming VAD");
 
     let samples =
         load_wav_samples("tests/audio/sample_1.wav").expect("Failed to load sample_1.wav");
 
-    let events = process_audio_and_collect_events(&mut vad, &samples, &mut event_consumer).await;
+    let speech_samples = process_audio_and_collect_speech(
+        &mut vad,
+        &samples,
+        &mut audio_producer,
+        &mut speech_consumer,
+    )
+    .await;
     let speeches = vad.speeches();
 
     // sample_1.wav should contain speech
     assert!(
         !speeches.is_empty(),
         "Expected to detect speech in sample_1.wav"
+    );
+
+    // Should have collected speech samples
+    assert!(
+        !speech_samples.is_empty(),
+        "Expected to collect speech samples from sample_1.wav"
     );
 
     // Verify that detected speech segments have valid timestamps
@@ -85,48 +103,30 @@ async fn test_speech_detection_sample_1() {
         println!("Detected speech: {}", speech);
     }
 
-    // Verify we got the right events
-    let speech_started_count = events
-        .iter()
-        .filter(|e| matches!(e, VadEvent::SpeechStarted { .. }))
-        .count();
-    let speech_ended_count = events
-        .iter()
-        .filter(|e| matches!(e, VadEvent::SpeechEnded { .. }))
-        .count();
-
-    assert!(
-        speech_started_count > 0,
-        "Expected at least one speech start event"
-    );
-    assert!(
-        speech_ended_count > 0,
-        "Expected at least one speech end event"
-    );
-    assert_eq!(
-        speech_ended_count,
-        speeches.len(),
-        "Should have one end event per speech segment"
-    );
-
     println!(
         "Total speech segments detected in sample_1.wav: {}",
         speeches.len()
     );
-    println!(
-        "Speech start events: {}, Speech end events: {}",
-        speech_started_count, speech_ended_count
-    );
+    println!("Total speech samples collected: {}", speech_samples.len());
+
+    let duration_seconds = speech_samples.len() as f32 / 16000.0;
+    println!("Speech duration: {:.2} seconds", duration_seconds);
 }
 
 #[tokio::test]
 async fn test_no_speech_detection_birds() {
-    let (mut vad, mut event_consumer) =
+    let (mut vad, mut audio_producer, mut speech_consumer) =
         create_streaming_vad().expect("Failed to create streaming VAD");
 
     let samples = load_wav_samples("tests/audio/birds.wav").expect("Failed to load birds.wav");
 
-    let events = process_audio_and_collect_events(&mut vad, &samples, &mut event_consumer).await;
+    let speech_samples = process_audio_and_collect_speech(
+        &mut vad,
+        &samples,
+        &mut audio_producer,
+        &mut speech_consumer,
+    )
+    .await;
     let speeches = vad.speeches();
 
     // birds.wav should not contain speech
@@ -136,14 +136,11 @@ async fn test_no_speech_detection_birds() {
         speeches.len()
     );
 
-    // Should not have any speech events
-    let speech_events = events
-        .iter()
-        .filter(|e| matches!(e, VadEvent::SpeechEnded { .. }))
-        .count();
-    assert_eq!(
-        speech_events, 0,
-        "Should not have any speech events for birds.wav"
+    // Should not have collected any speech samples
+    assert!(
+        speech_samples.is_empty(),
+        "Should not have collected speech samples for birds.wav, but got {} samples",
+        speech_samples.len()
     );
 
     println!("No speech detected in birds.wav (as expected)");
@@ -151,12 +148,18 @@ async fn test_no_speech_detection_birds() {
 
 #[tokio::test]
 async fn test_no_speech_detection_rooster() {
-    let (mut vad, mut event_consumer) =
+    let (mut vad, mut audio_producer, mut speech_consumer) =
         create_streaming_vad().expect("Failed to create streaming VAD");
 
     let samples = load_wav_samples("tests/audio/rooster.wav").expect("Failed to load rooster.wav");
 
-    let events = process_audio_and_collect_events(&mut vad, &samples, &mut event_consumer).await;
+    let speech_samples = process_audio_and_collect_speech(
+        &mut vad,
+        &samples,
+        &mut audio_producer,
+        &mut speech_consumer,
+    )
+    .await;
     let speeches = vad.speeches();
 
     // rooster.wav should not contain speech
@@ -166,14 +169,11 @@ async fn test_no_speech_detection_rooster() {
         speeches.len()
     );
 
-    // Should not have any speech events
-    let speech_events = events
-        .iter()
-        .filter(|e| matches!(e, VadEvent::SpeechEnded { .. }))
-        .count();
-    assert_eq!(
-        speech_events, 0,
-        "Should not have any speech events for rooster.wav"
+    // Should not have collected any speech samples
+    assert!(
+        speech_samples.is_empty(),
+        "Should not have collected speech samples for rooster.wav, but got {} samples",
+        speech_samples.len()
     );
 
     println!("No speech detected in rooster.wav (as expected)");
@@ -194,11 +194,18 @@ async fn test_vad_with_custom_params() {
         sample_rate: 16000,
     };
 
-    let (mut vad, mut event_consumer) = StreamingVad::new(silero, custom_params);
+    let (mut vad, mut audio_producer, mut speech_consumer) =
+        StreamingVad::new(silero, custom_params);
     let samples =
         load_wav_samples("tests/audio/sample_1.wav").expect("Failed to load sample_1.wav");
 
-    let events = process_audio_and_collect_events(&mut vad, &samples, &mut event_consumer).await;
+    let speech_samples = process_audio_and_collect_speech(
+        &mut vad,
+        &samples,
+        &mut audio_producer,
+        &mut speech_consumer,
+    )
+    .await;
     let speeches = vad.speeches();
 
     // Should still detect speech with custom parameters
@@ -207,70 +214,83 @@ async fn test_vad_with_custom_params() {
         "Expected to detect speech with custom parameters"
     );
 
+    // Should have collected speech samples
+    assert!(
+        !speech_samples.is_empty(),
+        "Expected to collect speech samples with custom parameters"
+    );
+
     println!("Speech segments with custom params: {}", speeches.len());
     for speech in speeches {
         println!("Custom params speech: {}", speech);
     }
 
-    // Verify events were generated
-    let speech_events = events
-        .iter()
-        .filter(|e| matches!(e, VadEvent::SpeechEnded { .. }))
-        .count();
-    assert_eq!(
-        speech_events,
-        speeches.len(),
-        "Should have events for all detected speeches"
+    let duration_seconds = speech_samples.len() as f32 / 16000.0;
+    println!(
+        "Speech duration with custom params: {:.2} seconds",
+        duration_seconds
     );
 }
 
 #[tokio::test]
 async fn test_empty_audio() {
-    let (mut vad, mut event_consumer) =
+    let (mut vad, mut audio_producer, mut speech_consumer) =
         create_streaming_vad().expect("Failed to create streaming VAD");
 
     let empty_samples: Vec<i16> = vec![];
 
-    vad.process_audio(&empty_samples)
-        .expect("Failed to process empty audio");
-    vad.finalize();
-
+    let speech_samples = process_audio_and_collect_speech(
+        &mut vad,
+        &empty_samples,
+        &mut audio_producer,
+        &mut speech_consumer,
+    )
+    .await;
     let speeches = vad.speeches();
+
     assert!(
         speeches.is_empty(),
         "Expected no speech detection in empty audio"
     );
 
-    // Should not receive any events
+    // Should not have collected any speech samples
     assert!(
-        event_consumer.pop().is_err(),
-        "Should not receive events for empty audio"
+        speech_samples.is_empty(),
+        "Should not collect speech samples for empty audio"
     );
+
+    println!("Empty audio test passed - no speech detected");
 }
 
 #[tokio::test]
 async fn test_silence_audio() {
-    let (mut vad, mut event_consumer) =
+    let (mut vad, mut audio_producer, mut speech_consumer) =
         create_streaming_vad().expect("Failed to create streaming VAD");
 
     // Create 1 second of silence at 16kHz
     let silence_samples: Vec<i16> = vec![0; 16000];
 
-    vad.process_audio(&silence_samples)
-        .expect("Failed to process silence audio");
-    vad.finalize();
-
+    let speech_samples = process_audio_and_collect_speech(
+        &mut vad,
+        &silence_samples,
+        &mut audio_producer,
+        &mut speech_consumer,
+    )
+    .await;
     let speeches = vad.speeches();
+
     assert!(
         speeches.is_empty(),
         "Expected no speech detection in silence"
     );
 
-    // Should not receive any events
+    // Should not have collected any speech samples
     assert!(
-        event_consumer.pop().is_err(),
-        "Should not receive events for silence"
+        speech_samples.is_empty(),
+        "Should not collect speech samples for silence"
     );
+
+    println!("Silence audio test passed - no speech detected");
 }
 
 #[tokio::test]
@@ -279,17 +299,29 @@ async fn test_multiple_processing_calls() {
         load_wav_samples("tests/audio/sample_1.wav").expect("Failed to load sample_1.wav");
 
     // First processing
-    let (mut vad1, mut event_consumer1) =
+    let (mut vad1, mut audio_producer1, mut speech_consumer1) =
         create_streaming_vad().expect("Failed to create first streaming VAD");
 
-    let events1 = process_audio_and_collect_events(&mut vad1, &samples, &mut event_consumer1).await;
+    let speech_samples1 = process_audio_and_collect_speech(
+        &mut vad1,
+        &samples,
+        &mut audio_producer1,
+        &mut speech_consumer1,
+    )
+    .await;
     let first_speeches = vad1.speeches().len();
 
     // Second processing (fresh VAD instance)
-    let (mut vad2, mut event_consumer2) =
+    let (mut vad2, mut audio_producer2, mut speech_consumer2) =
         create_streaming_vad().expect("Failed to create second streaming VAD");
 
-    let events2 = process_audio_and_collect_events(&mut vad2, &samples, &mut event_consumer2).await;
+    let speech_samples2 = process_audio_and_collect_speech(
+        &mut vad2,
+        &samples,
+        &mut audio_producer2,
+        &mut speech_consumer2,
+    )
+    .await;
     let second_speeches = vad2.speeches().len();
 
     // Results should be consistent
@@ -298,17 +330,21 @@ async fn test_multiple_processing_calls() {
         "Speech detection should be consistent across multiple calls"
     );
 
-    let speech_events1 = events1
-        .iter()
-        .filter(|e| matches!(e, VadEvent::SpeechEnded { .. }))
-        .count();
-    let speech_events2 = events2
-        .iter()
-        .filter(|e| matches!(e, VadEvent::SpeechEnded { .. }))
-        .count();
+    // Speech samples should be similar (allowing for small variations due to processing)
+    let samples_diff = (speech_samples1.len() as i32 - speech_samples2.len() as i32).abs();
+    assert!(
+        samples_diff < 1000, // Allow up to 1000 samples difference (about 62ms at 16kHz)
+        "Speech samples should be similar across multiple calls, but got {} vs {} samples (diff: {})",
+        speech_samples1.len(),
+        speech_samples2.len(),
+        samples_diff
+    );
 
-    assert_eq!(
-        speech_events1, speech_events2,
-        "Should generate same number of events across multiple calls"
+    println!(
+        "Multiple processing test: {} vs {} speeches, {} vs {} samples",
+        first_speeches,
+        second_speeches,
+        speech_samples1.len(),
+        speech_samples2.len()
     );
 }

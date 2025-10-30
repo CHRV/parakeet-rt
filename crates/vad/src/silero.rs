@@ -154,7 +154,7 @@ impl Silero {
     /// ```rust,no_run
     /// # use vad::{silero::Silero, utils::SampleRate};
     /// # let mut vad = Silero::new(SampleRate::SixteenkHz, "models/silero_vad.onnx")?;
-    /// let audio_samples: Vec<i16> = vec![0; 1024]; // Can handle various sizes
+    /// let audio_samples = vec![0f32; 1024]; // Can handle various sizes
     /// let confidence = vad.calc_level(&audio_samples)?;
     ///
     /// if confidence > 0.5 {
@@ -162,13 +162,13 @@ impl Silero {
     /// }
     /// # Ok::<(), ort::Error>(())
     /// ```
-    pub fn calc_level(&mut self, audio_frame: &[i16]) -> Result<f32, ort::Error> {
+    pub fn calc_level(&mut self, audio_frame: &[f32]) -> Result<f32, ort::Error> {
         // Determine expected frame size based on sample rate
 
         // Handle variable input sizes by processing in chunks
         if audio_frame.len() < self.expected_samples {
             // Input too small - pad with zeros
-            let mut padded_frame = vec![0i16; self.expected_samples];
+            let mut padded_frame = vec![0f32; self.expected_samples];
             padded_frame[..audio_frame.len()].copy_from_slice(audio_frame);
             return self.process_single_frame(&padded_frame);
         } else if audio_frame.len() == self.expected_samples {
@@ -184,7 +184,7 @@ impl Silero {
                     self.process_single_frame(chunk)?
                 } else {
                     // Last chunk might be smaller - pad it
-                    let mut padded_chunk = vec![0i16; self.expected_samples];
+                    let mut padded_chunk = vec![0f32; self.expected_samples];
                     padded_chunk[..chunk.len()].copy_from_slice(chunk);
                     self.process_single_frame(&padded_chunk)?
                 };
@@ -199,13 +199,10 @@ impl Silero {
     ///
     /// Internal method that handles the core VAD processing for frames
     /// of exactly the right size (512 samples for 16kHz, 256 for 8kHz).
-    fn process_single_frame(&mut self, audio_frame: &[i16]) -> Result<f32, ort::Error> {
+    fn process_single_frame(&mut self, audio_frame: &[f32]) -> Result<f32, ort::Error> {
         // Convert 16-bit signed integers to float32 in range [-1.0, 1.0]
         // This normalization is required by the Silero model
-        let data = audio_frame
-            .iter()
-            .map(|x| (*x as f32) / (i16::MAX as f32))
-            .collect::<Vec<_>>();
+        let data = audio_frame.iter().map(|x| (*x)).collect::<Vec<_>>();
 
         // Create new audio frame array
         let new_frame = Array2::<f32>::from_shape_vec([1, data.len()], data).unwrap();

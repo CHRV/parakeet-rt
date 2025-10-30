@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut vad, mut audio_producer, mut speech_consumer) = StreamingVad::new(silero, params);
     println!("✅ VAD initialized with optimized parameters");
     // Audio processing channel
-    let (audio_tx, mut audio_rx) = mpsc::unbounded_channel::<Vec<i16>>();
+    let (audio_tx, mut audio_rx) = mpsc::unbounded_channel::<Vec<f32>>();
 
     // Shutdown flag
     let running = Arc::new(AtomicBool::new(true));
@@ -72,10 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stream = device.build_input_stream(
         &config,
         move |data: &[f32], _| {
-            let samples: Vec<i16> = data
-                .iter()
-                .map(|&x| (x.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
-                .collect();
+            let samples: Vec<f32> = data.iter().map(|&x| x).collect();
             let _ = audio_tx.send(samples);
         },
         |err| eprintln!("❌ Audio error: {}", err),
@@ -98,7 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Process incoming audio from microphone
             Some(audio_chunk) = audio_rx.recv() => {
                 // Debug: Show audio input activity
-                let max_amplitude = audio_chunk.iter().map(|&x| x.abs()).max().unwrap_or(0);
+                let max_amplitude = audio_chunk.iter().map(|&x| (x.abs() * (i16::MAX as f32)) as i16).max().unwrap_or(0);
                 if max_amplitude > 1000 {
                     print!("\r🎵 Audio input: max amplitude {}", max_amplitude);
                     std::io::Write::flush(&mut std::io::stdout()).unwrap();
@@ -215,7 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn save_audio(
-    samples: &[i16],
+    samples: &[f32],
     filename: &str,
     sample_rate: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -227,8 +224,9 @@ fn save_audio(
     };
 
     let mut writer = WavWriter::create(filename, spec)?;
+
     for &sample in samples {
-        writer.write_sample(sample)?;
+        writer.write_sample((sample * i16::MAX as f32) as i16)?;
     }
     writer.finalize()?;
 

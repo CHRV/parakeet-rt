@@ -34,8 +34,8 @@ pub struct StreamingVad {
     silero: silero::Silero,
     params: Params,
     state: State,
-    audio_consumer: Consumer<i16>,
-    speech_producer: Producer<i16>,
+    audio_consumer: Consumer<f32>,
+    speech_producer: Producer<f32>,
     rx_buffer_size: usize,
     tx_buffer_size: usize,
 }
@@ -206,7 +206,7 @@ impl StreamingVad {
     pub fn new(
         silero: silero::Silero,
         params: utils::VadParams,
-    ) -> (Self, Producer<i16>, Consumer<i16>) {
+    ) -> (Self, Producer<f32>, Consumer<f32>) {
         let params = Params::from(params);
 
         // Buffer sizes optimized for real-time processing
@@ -249,7 +249,7 @@ impl StreamingVad {
         Ok(())
     }
 
-    fn process_frame(&mut self, frame: &[i16]) -> Result<(), ort::Error> {
+    fn process_frame(&mut self, frame: &[f32]) -> Result<(), ort::Error> {
         let speech_prob = self.silero.calc_level(frame)?;
 
         // Update state with proper VAD logic
@@ -318,7 +318,7 @@ mod tests {
         let (mut vad, mut audio_producer, mut speech_consumer) = StreamingVad::new(silero, params);
 
         // Test with silence
-        let silence = vec![0i16; 1600]; // 100ms of silence
+        let silence = vec![0f32; 1600]; // 100ms of silence
 
         // Push silence to the audio producer
         for sample in silence {

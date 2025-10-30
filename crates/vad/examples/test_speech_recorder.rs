@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Phase 1: Silence (2 seconds)");
     for _ in 0..125 {
         // 2 seconds of silence
-        let silence = vec![0i16; chunk_size];
+        let silence = vec![0f32; chunk_size];
 
         // Push to VAD
         for sample in silence {
@@ -68,12 +68,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Phase 2: Simulated speech (3 seconds)");
     for i in 0..188 {
         // 3 seconds of speech
-        let speech_chunk: Vec<i16> = (0..chunk_size)
+        let speech_chunk: Vec<f32> = (0..chunk_size)
             .map(|j| {
                 let t = (i * chunk_size + j) as f32 / 16000.0;
                 let amplitude = 12000.0; // Strong signal
                 let frequency = 440.0 + (t * 50.0).sin() * 100.0; // Varying frequency
-                (amplitude * (2.0 * std::f32::consts::PI * frequency * t).sin()) as i16
+                (amplitude * (2.0 * std::f32::consts::PI * frequency * t).sin()) / (i16::MAX as f32)
             })
             .collect();
 
@@ -105,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Phase 3: Silence to trigger save (1 second)");
     for _ in 0..63 {
         // 1 second of silence
-        let silence = vec![0i16; chunk_size];
+        let silence = vec![0f32; chunk_size];
 
         // Push to VAD
         for sample in silence {
@@ -149,12 +149,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Phase 4: Second speech segment (2 seconds)");
     for i in 0..125 {
         // 2 seconds of different speech
-        let speech_chunk: Vec<i16> = (0..chunk_size)
+        let speech_chunk: Vec<_> = (0..chunk_size)
             .map(|j| {
                 let t = (i * chunk_size + j) as f32 / 16000.0;
                 let amplitude = 10000.0;
                 let frequency = 220.0 + (t * 2.0).cos() * 80.0; // Different pattern
-                (amplitude * (2.0 * std::f32::consts::PI * frequency * t).sin()) as i16
+                (amplitude * (2.0 * std::f32::consts::PI * frequency * t).sin()) / (i16::MAX as f32)
             })
             .collect();
 
@@ -210,7 +210,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn save_audio(
-    samples: &[i16],
+    samples: &[f32],
     filename: &str,
     sample_rate: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -218,7 +218,7 @@ fn save_audio(
         channels: 1,
         sample_rate,
         bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
+        sample_format: hound::SampleFormat::Float,
     };
 
     let mut writer = WavWriter::create(filename, spec)?;

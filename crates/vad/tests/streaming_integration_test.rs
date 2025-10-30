@@ -10,13 +10,17 @@ use vad::{
 
 const MODEL_PATH: &str = "../../models/silero_vad.onnx";
 
-fn load_wav_samples(path: &str) -> Result<Vec<i16>, Box<dyn std::error::Error>> {
+fn load_wav_samples(path: &str) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
     let mut reader = WavReader::open(path)?;
     let samples: Result<Vec<i16>, _> = reader.samples().collect();
-    Ok(samples?)
+
+    Ok(samples?
+        .iter()
+        .map(|x| (*x as f32) / (i16::MAX as f32))
+        .collect::<Vec<_>>())
 }
 
-fn create_streaming_vad() -> Result<(StreamingVad, Producer<i16>, Consumer<i16>), ort::Error> {
+fn create_streaming_vad() -> Result<(StreamingVad, Producer<f32>, Consumer<f32>), ort::Error> {
     let silero = Silero::new(SampleRate::SixteenkHz, MODEL_PATH)?;
     let params = VadParams {
         frame_size: 64,
@@ -110,7 +114,7 @@ async fn test_streaming_no_speech_detection() {
         create_streaming_vad().expect("Failed to create streaming VAD");
 
     // Create pure silence
-    let silence_samples = vec![0i16; 16000]; // 1 second of silence
+    let silence_samples = vec![0f32; 16000]; // 1 second of silence
 
     // Push silence samples to VAD
     for sample in silence_samples {
@@ -152,7 +156,7 @@ async fn test_streaming_multiple_speech_segments() {
     let chunk_size = 800; // 50ms chunks
 
     // Silence
-    let silence = vec![0i16; chunk_size * 4]; // 200ms silence
+    let silence = vec![0f32; chunk_size * 4]; // 200ms silence
     for sample in silence {
         let _ = audio_producer.push(sample);
     }
@@ -161,12 +165,12 @@ async fn test_streaming_multiple_speech_segments() {
     // First speech segment (simulated with sine wave - more likely to be detected as speech)
     for i in 0..10 {
         // 500ms of simulated speech
-        let speech_chunk: Vec<i16> = (0..chunk_size)
+        let speech_chunk: Vec<f32> = (0..chunk_size)
             .map(|j| {
                 let t = ((i * chunk_size + j) as f32) / 16000.0;
                 let amplitude = 8000.0;
                 let frequency = 440.0 + (t * 2.0).sin() * 100.0; // Varying frequency
-                (amplitude * (2.0 * std::f32::consts::PI * frequency * t).sin()) as i16
+                (amplitude * (2.0 * std::f32::consts::PI * frequency * t).sin()) / (i16::MAX as f32)
             })
             .collect();
 
@@ -193,7 +197,7 @@ async fn test_streaming_multiple_speech_segments() {
     }
 
     // Silence between segments
-    let silence = vec![0i16; chunk_size * 6]; // 300ms silence
+    let silence = vec![0f32; chunk_size * 6]; // 300ms silence
     for sample in silence {
         let _ = audio_producer.push(sample);
     }
@@ -217,12 +221,12 @@ async fn test_streaming_multiple_speech_segments() {
     // Second speech segment
     for i in 0..8 {
         // 400ms of simulated speech
-        let speech_chunk: Vec<i16> = (0..chunk_size)
+        let speech_chunk: Vec<f32> = (0..chunk_size)
             .map(|j| {
                 let t = ((i * chunk_size + j) as f32) / 16000.0;
                 let amplitude = 7000.0;
                 let frequency = 220.0 + (t * 3.0).cos() * 80.0; // Different pattern
-                (amplitude * (2.0 * std::f32::consts::PI * frequency * t).sin()) as i16
+                (amplitude * (2.0 * std::f32::consts::PI * frequency * t).sin()) / (i16::MAX as f32)
             })
             .collect();
 

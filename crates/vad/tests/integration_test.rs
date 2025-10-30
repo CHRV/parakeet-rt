@@ -10,13 +10,17 @@ use vad::{
 
 const MODEL_PATH: &str = "../../models/silero_vad.onnx";
 
-fn load_wav_samples(path: &str) -> Result<Vec<i16>, Box<dyn std::error::Error>> {
+fn load_wav_samples(path: &str) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
     let mut reader = WavReader::open(path)?;
     let samples: Result<Vec<i16>, _> = reader.samples().collect();
-    Ok(samples?)
+
+    Ok(samples?
+        .iter()
+        .map(|x| (*x as f32) / (i16::MAX as f32))
+        .collect::<Vec<_>>())
 }
 
-fn create_streaming_vad() -> Result<(StreamingVad, Producer<i16>, Consumer<i16>), ort::Error> {
+fn create_streaming_vad() -> Result<(StreamingVad, Producer<f32>, Consumer<f32>), ort::Error> {
     let silero = Silero::new(SampleRate::SixteenkHz, MODEL_PATH)?;
     let params = VadParams::default();
     Ok(StreamingVad::new(silero, params))
@@ -24,10 +28,10 @@ fn create_streaming_vad() -> Result<(StreamingVad, Producer<i16>, Consumer<i16>)
 
 async fn process_audio_and_collect_speech(
     vad: &mut StreamingVad,
-    samples: &[i16],
-    audio_producer: &mut Producer<i16>,
-    speech_consumer: &mut Consumer<i16>,
-) -> Vec<i16> {
+    samples: &[f32],
+    audio_producer: &mut Producer<f32>,
+    speech_consumer: &mut Consumer<f32>,
+) -> Vec<f32> {
     let chunk_size = 1600; // 100ms at 16kHz
     let mut speech_samples = Vec::new();
 
@@ -237,7 +241,7 @@ async fn test_empty_audio() {
     let (mut vad, mut audio_producer, mut speech_consumer) =
         create_streaming_vad().expect("Failed to create streaming VAD");
 
-    let empty_samples: Vec<i16> = vec![];
+    let empty_samples: Vec<f32> = vec![];
 
     let speech_samples = process_audio_and_collect_speech(
         &mut vad,
@@ -268,7 +272,7 @@ async fn test_silence_audio() {
         create_streaming_vad().expect("Failed to create streaming VAD");
 
     // Create 1 second of silence at 16kHz
-    let silence_samples: Vec<i16> = vec![0; 16000];
+    let silence_samples: Vec<f32> = vec![0f32; 16000];
 
     let speech_samples = process_audio_and_collect_speech(
         &mut vad,

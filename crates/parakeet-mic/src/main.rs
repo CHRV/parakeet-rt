@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use tokio::time::sleep;
 
 /// Convert a single token to text with proper spacing
 fn token_to_text(token_text: &str, is_first_token: bool) -> Option<String> {
@@ -90,8 +91,6 @@ struct AudioCapture {
     _stream: Stream,
 }
 
-
-
 impl AudioCapture {
     fn new(
         device: &Device,
@@ -104,17 +103,21 @@ impl AudioCapture {
         let channels = config.channels as usize;
 
         let stream = match sample_format {
-            SampleFormat::F32 => Self::build_stream::<f32>(device, config, audio_producer, audio_writer, channels)?,
-            SampleFormat::I16 => Self::build_stream::<i16>(device, config, audio_producer, audio_writer, channels)?,
-            SampleFormat::U16 => Self::build_stream::<u16>(device, config, audio_producer, audio_writer, channels)?,
+            SampleFormat::F32 => {
+                Self::build_stream::<f32>(device, config, audio_producer, audio_writer, channels)?
+            }
+            SampleFormat::I16 => {
+                Self::build_stream::<i16>(device, config, audio_producer, audio_writer, channels)?
+            }
+            SampleFormat::U16 => {
+                Self::build_stream::<u16>(device, config, audio_producer, audio_writer, channels)?
+            }
             _ => return Err(anyhow!("Unsupported sample format: {:?}", sample_format)),
         };
 
         stream.play()?;
 
-        Ok(AudioCapture {
-            _stream: stream,
-        })
+        Ok(AudioCapture { _stream: stream })
     }
 
     fn build_stream<T>(
@@ -172,7 +175,8 @@ fn list_audio_devices() -> Result<()> {
         println!("  {}: {}", index, name);
 
         if let Ok(config) = device.default_input_config() {
-            println!("    Default config: {} channels, {} Hz, {:?}",
+            println!(
+                "    Default config: {} channels, {} Hz, {:?}",
                 config.channels(),
                 config.sample_rate().0,
                 config.sample_format()
@@ -187,12 +191,14 @@ fn get_audio_device(host: &Host, device_index: Option<usize>) -> Result<Device> 
     match device_index {
         Some(index) => {
             let devices: Vec<_> = host.input_devices()?.collect();
-            devices.into_iter()
+            devices
+                .into_iter()
                 .nth(index)
                 .ok_or_else(|| anyhow!("Device index {} not found", index))
         }
-        None => host.default_input_device()
-            .ok_or_else(|| anyhow!("No default input device available"))
+        None => host
+            .default_input_device()
+            .ok_or_else(|| anyhow!("No default input device available")),
     }
 }
 
@@ -208,7 +214,8 @@ fn setup_audio_config(device: &Device, target_sample_rate: u32) -> Result<Stream
         buffer_size: cpal::BufferSize::Default,
     };
 
-    println!("Audio config: {} channels, {} Hz, {:?}",
+    println!(
+        "Audio config: {} channels, {} Hz, {:?}",
         config.channels,
         config.sample_rate.0,
         default_config.sample_format()
@@ -217,7 +224,22 @@ fn setup_audio_config(device: &Device, target_sample_rate: u32) -> Result<Stream
     Ok(config)
 }
 
-fn transcription_worker(
+async fn audio_processor_worker(
+    mut streaming_engine: StreamingParakeetTDT,
+    running: Arc<AtomicBool>,
+) {
+    while running.load(Ordering::Relaxed) {
+        // Process audio through the streaming engine
+        if let Err(e) = streaming_engine.process_audio().await {
+            eprintln!("Error processing audio: {}", e);
+            continue;
+        }
+
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn transcription_worker(
     mut streaming_engine: StreamingParakeetTDT,
     mut token_consumer: rtrb::Consumer<TokenResult>,
     output_writer: OutputWriter,
@@ -227,7 +249,7 @@ fn transcription_worker(
 
     while running.load(Ordering::Relaxed) {
         // Process audio through the streaming engine
-        if let Err(e) = streaming_engine.process_audio() {
+        if let Err(e) = streaming_engine.process_audio().await {
             eprintln!("Error processing audio: {}", e);
             continue;
         }
@@ -235,6 +257,26 @@ fn transcription_worker(
         // Read any new tokens from the consumer
         let mut new_tokens = Vec::new();
         while let Ok(token_result) = token_consumer.pop() {
+            if let Some(ref token_text) = token_result.text {
+                // Convert token to text with proper spacing
+                if let Some(text_part) = token_to_text(token_text, text_buffer.is_empty()) {
+                    // Add to buffer for sentence detection
+                    text_buffer.push_str(&text_part);
+
+                    // Stream output immediately
+                    print!("{}", text_part);
+                    use std::io::{self, Write};
+                    io::stdout().flush().unwrap(); // Force immediate output
+
+                    // Check for sentence endings and add newlines
+                    if text_part.contains('.') || text_part.contains('?') || text_part.contains('!')
+                    {
+                        println!(); // New line after sentence
+                        io::stdout().flush().unwrap();
+                        text_buffer.clear(); // Clear buffer after complete sentence
+                    }
+                }
+            }
             new_tokens.push(token_result);
         }
 
@@ -245,29 +287,6 @@ fn transcription_worker(
             for token_result in &new_tokens {
                 if let Some(ref text) = token_result.text {
                     text_parts.push(text.clone());
-                }
-            }
-
-            // Process each token immediately for streaming output
-            for token_result in &new_tokens {
-                if let Some(ref token_text) = token_result.text {
-                    // Convert token to text with proper spacing
-                    if let Some(text_part) = token_to_text(token_text, text_buffer.is_empty()) {
-                        // Add to buffer for sentence detection
-                        text_buffer.push_str(&text_part);
-
-                        // Stream output immediately
-                        print!("{}", text_part);
-                        use std::io::{self, Write};
-                        io::stdout().flush().unwrap(); // Force immediate output
-
-                        // Check for sentence endings and add newlines
-                        if text_part.contains('.') || text_part.contains('?') || text_part.contains('!') {
-                            println!(); // New line after sentence
-                            io::stdout().flush().unwrap();
-                            text_buffer.clear(); // Clear buffer after complete sentence
-                        }
-                    }
                 }
             }
 
@@ -288,8 +307,6 @@ fn transcription_worker(
 
     output_writer
 }
-
-
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -314,7 +331,10 @@ async fn main() -> Result<()> {
 
     if let Some(ref output_path) = args.output {
         let action = if args.append { "Appending" } else { "Writing" };
-        println!("{} output to: {} (format: {})", action, output_path, args.format);
+        println!(
+            "{} output to: {} (format: {})",
+            action, output_path, args.format
+        );
     }
 
     // Setup audio writer
@@ -362,7 +382,10 @@ async fn main() -> Result<()> {
     println!("  • Left context: {:.1}s", args.left_context);
     println!("  • Chunk size: {:.0}ms", args.chunk_size * 1000.0);
     println!("  • Right context: {:.0}ms", args.right_context * 1000.0);
-    println!("  • Total latency: {:.0}ms", context.latency_secs(args.sample_rate as usize) * 1000.0);
+    println!(
+        "  • Total latency: {:.0}ms",
+        context.latency_secs(args.sample_rate as usize) * 1000.0
+    );
 
     // Create streaming engine
     let (streaming_engine, audio_producer, token_consumer) =
@@ -394,16 +417,11 @@ async fn main() -> Result<()> {
 
     // Start transcription worker thread
     let transcription_handle = thread::spawn(move || {
-        transcription_worker(
-            streaming_engine,
-            token_consumer,
-            output_writer,
-            running,
-        )
+        transcription_worker(streaming_engine, token_consumer, output_writer, running)
     });
 
     // Wait for shutdown
-    let output_writer = transcription_handle.join().unwrap();
+    let output_writer = transcription_handle.join().unwrap().await;
 
     // Drop audio capture to release the AudioWriter reference
     drop(audio_capture);

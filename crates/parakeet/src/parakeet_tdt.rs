@@ -1,6 +1,7 @@
 use crate::error::{Error, Result};
 use crate::execution::ModelConfig as ExecutionConfig;
 use ndarray::{Array1, Array2, Array3, Axis};
+use ort::session::RunOptions;
 use ort::session::Session;
 use std::path::{Path, PathBuf};
 
@@ -33,6 +34,7 @@ pub struct ParakeetTDTModel {
     encoder: Session,
     decoder_joint: Session,
     pub config: TDTModelConfig,
+    pub run_options: RunOptions,
 }
 
 impl ParakeetTDTModel {
@@ -75,6 +77,7 @@ impl ParakeetTDTModel {
             encoder,
             decoder_joint,
             config,
+            run_options: RunOptions::new()?,
         })
     }
 
@@ -130,31 +133,37 @@ impl ParakeetTDTModel {
     }
 
     /// Run greedy decoding - returns list of (token_ids, timestamps) for each sequence
-    pub fn forward(
+    pub async fn forward(
         &mut self,
         waves: Array2<f32>,
         waves_lens: Array1<i64>,
     ) -> Result<Vec<(Vec<i32>, Vec<usize>)>> {
         // Run preprocessor
-        let (features, features_len) = self.preprocess(waves, waves_lens)?;
+        let (features, features_len) = self.preprocess(waves, waves_lens).await?;
         // Run encoder
-        let (encoder_out, encoder_len) = self.encode(features, features_len)?;
+        let (encoder_out, encoder_len) = self.encode(features, features_len).await?;
 
         // Run greedy decoding with decoder_joint
-        let results = self.decoding(encoder_out, encoder_len)?;
+        let results = self.decoding(encoder_out, encoder_len).await?;
 
         Ok(results)
     }
 
-    pub fn preprocess(
+    pub async fn preprocess(
         &mut self,
         wave: Array2<f32>,
         lens: Array1<i64>,
     ) -> Result<(Array3<f32>, Array1<i64>)> {
-        let outputs = self.preprocessor.run(ort::inputs![
-            "waveforms"=>ort::value::Value::from_array(wave)?,
-            "waveforms_lens"=>ort::value::Value::from_array(lens)?,
-        ])?;
+        let outputs = self
+            .preprocessor
+            .run_async(
+                ort::inputs![
+                    "waveforms"=>ort::value::Value::from_array(wave)?,
+                    "waveforms_lens"=>ort::value::Value::from_array(lens)?,
+                ],
+                &self.run_options,
+            )?
+            .await?;
 
         let features = outputs["features"].try_extract_tensor::<f32>()?;
         let shape = features.0.as_ref();
@@ -186,16 +195,22 @@ impl ParakeetTDTModel {
         Ok((features, features_lens))
     }
 
-    pub fn encode(
+    pub async fn encode(
         &mut self,
         features: Array3<f32>,
         features_lens: Array1<i64>,
     ) -> Result<(Array3<f32>, Array1<i64>)> {
         // Pass features and lengths directly to encoder, matching Python implementation
-        let outputs = self.encoder.run(ort::inputs!(
-            "audio_signal" => ort::value::Value::from_array(features)?,
-            "length" => ort::value::Value::from_array(features_lens)?
-        ))?;
+        let outputs = self
+            .encoder
+            .run_async(
+                ort::inputs!(
+                    "audio_signal" => ort::value::Value::from_array(features)?,
+                    "length" => ort::value::Value::from_array(features_lens)?
+                ),
+                &self.run_options,
+            )?
+            .await?;
 
         let encoder_out = &outputs["outputs"];
         let encoder_lens = &outputs["encoded_lengths"];
@@ -241,7 +256,7 @@ impl ParakeetTDTModel {
     }
 
     /// Decode a single step - returns (probs, step, state)
-    pub fn decode(
+    pub async fn decode(
         &mut self,
         tokens: &[i32],
         prev_state: State,
@@ -266,13 +281,19 @@ impl ParakeetTDTModel {
             .map_err(|e| Error::Model(format!("Failed to create targets: {e}")))?;
 
         // Run decoder_joint
-        let outputs = self.decoder_joint.run(ort::inputs!(
-            "encoder_outputs" => ort::value::Value::from_array(frame_reshaped)?,
-            "targets" => ort::value::Value::from_array(targets)?,
-            "target_length" => ort::value::Value::from_array(Array1::from_vec(vec![1i32]))?,
-            "input_states_1" => ort::value::Value::from_array(prev_state.h.clone())?,
-            "input_states_2" => ort::value::Value::from_array(prev_state.c.clone())?
-        ))?;
+        let outputs = self
+            .decoder_joint
+            .run_async(
+                ort::inputs!(
+                    "encoder_outputs" => ort::value::Value::from_array(frame_reshaped)?,
+                    "targets" => ort::value::Value::from_array(targets)?,
+                    "target_length" => ort::value::Value::from_array(Array1::from_vec(vec![1i32]))?,
+                    "input_states_1" => ort::value::Value::from_array(prev_state.h.clone())?,
+                    "input_states_2" => ort::value::Value::from_array(prev_state.c.clone())?
+                ),
+                &self.run_options,
+            )?
+            .await?;
 
         // Extract logits
         let (_, logits_data) = outputs["outputs"]
@@ -338,7 +359,7 @@ impl ParakeetTDTModel {
     }
 
     /// Decoding function that matches the Python implementation
-    pub fn decoding(
+    pub async fn decoding(
         &mut self,
         encoder_out: Array3<f32>,
         encoder_out_lens: Array1<i64>,
@@ -358,7 +379,8 @@ impl ParakeetTDTModel {
                 // Get encoding at time t - encodings shape is (features, time)
                 let encoding = encodings.slice(ndarray::s![t, ..]).to_owned();
 
-                let (probs, step, state) = self.decode(&tokens, prev_state.clone(), encoding)?;
+                let (probs, step, state) =
+                    self.decode(&tokens, prev_state.clone(), encoding).await?;
 
                 // Ensure probs shape is valid
                 if probs.len() > self.config.vocab_size {

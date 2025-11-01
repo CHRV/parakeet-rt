@@ -205,10 +205,10 @@ impl StreamingParakeetTDT {
 
     /// Process audio from the input ring buffer
     /// This should be called regularly to process incoming audio
-    pub fn process_audio(&mut self) -> Result<()> {
+    pub async fn process_audio(&mut self) -> Result<()> {
         // Process available chunks and emit tokens
         while self.buffer.has_next_chunk() {
-            self.process_next_chunk()?;
+            self.process_next_chunk().await?;
         }
 
         Ok(())
@@ -223,7 +223,7 @@ impl StreamingParakeetTDT {
     }
 
     /// Process a single chunk and return new tokens with timestamps
-    fn process_next_chunk(&mut self) -> Result<Vec<(i32, usize)>> {
+    async fn process_next_chunk(&mut self) -> Result<Vec<(i32, usize)>> {
         let (audio_chunk, chunk_length) = match self.buffer.get_next_chunk() {
             Some(chunk) => chunk,
             None => return Ok(Vec::new()),
@@ -235,10 +235,10 @@ impl StreamingParakeetTDT {
         let audio_lengths_val = audio_lengths[0];
 
         // Run preprocessing
-        let (features, features_len) = self.model.preprocess(audio_chunk, audio_lengths)?;
+        let (features, features_len) = self.model.preprocess(audio_chunk, audio_lengths).await?;
 
         // Run encoder
-        let (encoder_out, encoder_len) = self.model.encode(features, features_len)?;
+        let (encoder_out, encoder_len) = self.model.encode(features, features_len).await?;
 
         // Process only the chunk portion (excluding context)
         let mut new_tokens = Vec::new();
@@ -267,7 +267,8 @@ impl StreamingParakeetTDT {
             let encoding = encoder_out.slice(ndarray::s![0, frame_idx, ..]).to_owned();
 
             // Decode this frame
-            let (probs, _step, new_state) = self.decode_frame(encoding, &[self.previous_token])?;
+            let (probs, _step, new_state) =
+                self.decode_frame(encoding, &[self.previous_token]).await?;
 
             // Get token with highest probability
             let token = probs
@@ -311,7 +312,7 @@ impl StreamingParakeetTDT {
     }
 
     /// Decode a single frame
-    fn decode_frame(
+    async fn decode_frame(
         &mut self,
         encoding: Array1<f32>,
         tokens: &[i32],
@@ -321,7 +322,7 @@ impl StreamingParakeetTDT {
             c: Array3::<f32>::zeros((2, 1, 640)),
         });
 
-        self.model.decode(tokens, prev_state, encoding)
+        self.model.decode(tokens, prev_state, encoding).await
     }
 
     /// Reset the streaming state

@@ -72,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stream = device.build_input_stream(
         &config,
         move |data: &[f32], _| {
-            let samples: Vec<f32> = data.iter().map(|&x| x).collect();
+            let samples: Vec<f32> = data.iter().copied().collect();
             let _ = audio_tx.send(samples);
         },
         |err| eprintln!("❌ Audio error: {}", err),

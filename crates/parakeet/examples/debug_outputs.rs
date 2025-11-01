@@ -91,8 +91,7 @@ fn load_wav_simple(path: &str) -> Result<(Array1<f32>, u32)> {
     use hound::WavReader;
 
     let mut reader = WavReader::open(path).map_err(|e| {
-        parakeet::error::Error::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        parakeet::error::Error::Io(std::io::Error::other(
             e.to_string(),
         ))
     })?;
@@ -104,8 +103,7 @@ fn load_wav_simple(path: &str) -> Result<(Array1<f32>, u32)> {
         .collect();
 
     let samples = samples.map_err(|e| {
-        parakeet::error::Error::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        parakeet::error::Error::Io(std::io::Error::other(
             e.to_string(),
         ))
     })?;

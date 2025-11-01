@@ -1,4 +1,3 @@
-use hound;
 use ndarray::{Array1, Array2};
 use parakeet::decoder::ParakeetTDTDecoder;
 use parakeet::execution::ModelConfig as ExecutionConfig;

@@ -1,8 +1,6 @@
-use crate::error::{Error, Result};
 #[cfg(test)]
 use hound::{WavReader, WavSpec};
 use ndarray::Array2;
-use ort;
 use std::f32::consts::PI;
 
 #[cfg(test)]

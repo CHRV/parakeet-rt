@@ -170,7 +170,7 @@ impl Silero {
             // Input too small - pad with zeros
             let mut padded_frame = vec![0f32; self.expected_samples];
             padded_frame[..audio_frame.len()].copy_from_slice(audio_frame);
-            return self.process_single_frame(&padded_frame);
+            self.process_single_frame(&padded_frame)
         } else if audio_frame.len() == self.expected_samples {
             // Perfect size - process directly
             return self.process_single_frame(audio_frame);
@@ -202,7 +202,7 @@ impl Silero {
     fn process_single_frame(&mut self, audio_frame: &[f32]) -> Result<f32, ort::Error> {
         // Convert 16-bit signed integers to float32 in range [-1.0, 1.0]
         // This normalization is required by the Silero model
-        let data = audio_frame.iter().map(|x| (*x)).collect::<Vec<_>>();
+        let data = audio_frame.to_vec();
 
         // Create new audio frame array
         let new_frame = Array2::<f32>::from_shape_vec([1, data.len()], data).unwrap();

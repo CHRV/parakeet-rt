@@ -12,6 +12,7 @@ ndarray = "0.16.1"
 rustfft = "6.4.1"
 ndarray-stats = "0.6.0"
 hound = { version = "3.5.1", optional = true }
+rtrb = "0.3.2"
 
 [dev-dependencies]
 hound = "3.5.1"
@@ -30,4 +31,12 @@ required-features = ["audio"]
 
 [[example]]
 name = "debug_outputs"
+required-features = ["audio"]
+
+[[example]]
+name = "streaming_transcribe"
+required-features = ["audio"]
+
+[[example]]
+name = "simple_streaming"
 required-features = ["audio"]

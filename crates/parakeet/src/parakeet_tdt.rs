@@ -74,7 +74,7 @@ impl ParakeetTDTModel {
             preprocessor,
             encoder,
             decoder_joint,
-            config
+            config,
         })
     }
 
@@ -217,7 +217,9 @@ impl ParakeetTDTModel {
 
         // Create encoder output array
         let encoder_out = Array3::from_shape_vec((b, t, d), data.to_vec())
-            .map_err(|e| Error::Model(format!("Failed to create encoder array: {e}")))?.permuted_axes((0,2,1)).to_owned();
+            .map_err(|e| Error::Model(format!("Failed to create encoder array: {e}")))?
+            .permuted_axes((0, 2, 1))
+            .to_owned();
 
         // The encoder already outputs in (batch, features, time) format, no transpose needed
 
@@ -248,7 +250,9 @@ impl ParakeetTDTModel {
         //let encoder_dim = encoding.len();
 
         // Reshape encoding to [1, encoder_dim, 1] for decoder input - matches Python: encoder_out[None, :, None]
-        let frame_reshaped = encoding.insert_axis(Axis(0)).insert_axis(Axis(2))
+        let frame_reshaped = encoding
+            .insert_axis(Axis(0))
+            .insert_axis(Axis(2))
             //.to_shape((1, encoder_dim, 1))
             //.map_err(|e| Error::Model(format!("Failed to reshape frame: {e}")))?
             .to_owned();
@@ -354,8 +358,6 @@ impl ParakeetTDTModel {
                 // Get encoding at time t - encodings shape is (features, time)
                 let encoding = encodings.slice(ndarray::s![t, ..]).to_owned();
 
-
-
                 let (probs, step, state) = self.decode(&tokens, prev_state.clone(), encoding)?;
 
                 // Ensure probs shape is valid
@@ -375,10 +377,7 @@ impl ParakeetTDTModel {
                     .map(|(idx, _)| idx)
                     .unwrap_or(self.config.blank_idx) as i32;
 
-
                 println!("{}", token);
-
-
 
                 if token != self.config.blank_idx as i32 {
                     prev_state = state;

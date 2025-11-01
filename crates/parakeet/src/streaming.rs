@@ -17,12 +17,7 @@ pub struct ContextConfig {
 
 impl ContextConfig {
     /// Create new context config with time-based parameters
-    pub fn new(
-        left_secs: f32,
-        chunk_secs: f32,
-        right_secs: f32,
-        sample_rate: usize,
-    ) -> Self {
+    pub fn new(left_secs: f32, chunk_secs: f32, right_secs: f32, sample_rate: usize) -> Self {
         Self {
             left_samples: (left_secs * sample_rate as f32) as usize,
             chunk_samples: (chunk_secs * sample_rate as f32) as usize,
@@ -43,30 +38,22 @@ impl ContextConfig {
 
 /// Audio buffer for streaming inference with context management
 pub struct StreamingAudioBuffer {
-    /// Internal buffer storing all audio samples for context access
-    buffer: Vec<f32>,
+    /// Ring buffer consumer for reading audio samples
+    audio_consumer: Consumer<f32>,
     /// Context configuration
     context: ContextConfig,
-    /// Current position in the stream
-    position: usize,
     /// Whether we've reached the end of the stream
     is_finished: bool,
 }
 
 impl StreamingAudioBuffer {
-    /// Create new streaming buffer
-    pub fn new(context: ContextConfig) -> Self {
+    /// Create new streaming buffer with audio consumer
+    pub fn new(context: ContextConfig, audio_consumer: Consumer<f32>) -> Self {
         Self {
-            buffer: Vec::new(),
+            audio_consumer,
             context,
-            position: 0,
             is_finished: false,
         }
-    }
-
-    /// Add audio samples to the buffer
-    pub fn add_samples(&mut self, samples: &[f32]) {
-        self.buffer.extend_from_slice(samples);
     }
 
     /// Mark the stream as finished (no more samples will be added)
@@ -77,11 +64,12 @@ impl StreamingAudioBuffer {
     /// Check if there's enough data for the next chunk
     pub fn has_next_chunk(&self) -> bool {
         if self.is_finished {
-            // If finished, we can process remaining samples
-            self.buffer.len() > self.position
+            // If finished, we can process any remaining samples
+            self.audio_consumer.slots() > self.context.left_samples
         } else {
-            // Need full context for processing
-            self.buffer.len() >= self.position + self.context.total_samples()
+            // Need at least chunk_samples + right_samples for processing
+            // (left context will be built up over time)
+            self.audio_consumer.slots() >= self.context.total_samples()
         }
     }
 
@@ -91,55 +79,49 @@ impl StreamingAudioBuffer {
             return None;
         }
 
-        let start_pos = self.position.saturating_sub(self.context.left_samples);
+        let available_samples = self.audio_consumer.slots();
 
-        let end_pos = if self.is_finished {
+        let read_size = if self.is_finished {
             // For the last chunk, take all remaining samples
-            self.buffer.len()
+            available_samples
         } else {
-            std::cmp::min(
-                self.position + self.context.chunk_samples + self.context.right_samples,
-                self.buffer.len(),
-            )
+            // Read as much context as we can, up to total_samples
+            std::cmp::min(available_samples, self.context.total_samples())
         };
 
-        if start_pos >= end_pos {
-            return None;
+        match self.audio_consumer.read_chunk(read_size) {
+            Ok(frame) => {
+                let (first, second) = frame.as_slices();
+                let frame_data = [first, second].concat();
+
+                // Only commit the chunk size, not the entire context
+                let commit_size = if self.is_finished {
+                    frame_data.len() // Commit all remaining samples when finished
+                } else {
+                    self.context.chunk_samples // Only commit the chunk portion
+                };
+
+                // Commit only the chunk size to advance the buffer position
+                frame.commit(commit_size);
+
+                // Create batch array [1, samples] with full context
+                let audio_array = Array2::from_shape_vec((1, frame_data.len()), frame_data)
+                    .map_err(|_| ())
+                    .ok()?;
+
+                // The chunk length is the actual processing size (excluding context padding)
+                let chunk_length = commit_size;
+
+                Some((audio_array, chunk_length))
+            }
+            Err(_) => None, // No more complete chunks available
         }
-
-        // Extract samples for this chunk
-        let chunk_samples = self.buffer[start_pos..end_pos].to_vec();
-
-        // Calculate actual chunk length (excluding context)
-        let actual_chunk_start = if self.position >= self.context.left_samples {
-            self.context.left_samples
-        } else {
-            self.position
-        };
-
-        let actual_chunk_end = if self.is_finished {
-            chunk_samples.len()
-        } else {
-            actual_chunk_start + self.context.chunk_samples
-        };
-
-        let chunk_length = actual_chunk_end - actual_chunk_start;
-
-        // Advance position
-        self.position += chunk_length;
-
-        // Create batch array [1, samples]
-        let audio_array = Array2::from_shape_vec((1, chunk_samples.len()), chunk_samples)
-            .map_err(|_| ())
-            .ok()?;
-
-        Some((audio_array, chunk_length))
     }
 
     /// Reset buffer for new stream
     pub fn reset(&mut self) {
-        self.buffer.clear();
-        self.position = 0;
+        // Clear ring buffer by consuming all available samples
+        while self.audio_consumer.pop().is_ok() {}
         self.is_finished = false;
     }
 }
@@ -159,8 +141,6 @@ pub struct StreamingParakeetTDT {
     model: ParakeetTDTModel,
     /// Context configuration
     context: ContextConfig,
-    /// Ring buffer consumer for reading input audio
-    audio_consumer: Consumer<f32>,
     /// Ring buffer producer for outputting transcription tokens
     token_producer: Producer<TokenResult>,
     /// Audio buffer for context management
@@ -175,6 +155,8 @@ pub struct StreamingParakeetTDT {
     rx_buffer_size: usize,
     /// Output buffer size
     tx_buffer_size: usize,
+
+    previous_token: i32,
 }
 
 impl StreamingParakeetTDT {
@@ -183,7 +165,7 @@ impl StreamingParakeetTDT {
     pub fn new(
         model: ParakeetTDTModel,
         context: ContextConfig,
-        sample_rate: usize
+        sample_rate: usize,
     ) -> (Self, Producer<f32>, Consumer<TokenResult>) {
         Self::new_with_vocab(model, context, sample_rate, None)
     }
@@ -194,27 +176,28 @@ impl StreamingParakeetTDT {
         model: ParakeetTDTModel,
         context: ContextConfig,
         sample_rate: usize,
-        vocab: Option<Vocabulary>
+        vocab: Option<Vocabulary>,
     ) -> (Self, Producer<f32>, Consumer<TokenResult>) {
         // Buffer sizes optimized for real-time processing
-        let rx_buffer_size = sample_rate * 2; // 2 seconds of input audio buffer
-        let tx_buffer_size = 1000; // Buffer for 1000 tokens
+        let rx_buffer_size = context.total_samples() * 2; // 2 seconds of input audio buffer
+        let tx_buffer_size = 1024; // Buffer for 1000 tokens
 
         // Create ring buffers for audio input and token output
         let (audio_producer, audio_consumer) = RingBuffer::new(rx_buffer_size);
         let (token_producer, token_consumer) = RingBuffer::new(tx_buffer_size);
+        let previous_token = model.config.blank_idx.clone() as i32;
 
         let engine = Self {
             model,
             context: context.clone(),
-            audio_consumer,
             token_producer,
-            buffer: StreamingAudioBuffer::new(context),
+            buffer: StreamingAudioBuffer::new(context, audio_consumer),
             state: None,
             vocab,
             _sample_rate: sample_rate,
             rx_buffer_size,
             tx_buffer_size,
+            previous_token,
         };
 
         (engine, audio_producer, token_consumer)
@@ -223,50 +206,16 @@ impl StreamingParakeetTDT {
     /// Process audio from the input ring buffer
     /// This should be called regularly to process incoming audio
     pub fn process_audio(&mut self) -> Result<()> {
-        // Read all available audio from ring buffer
-        self.update_from_ring_buffer();
-
         // Process available chunks and emit tokens
         while self.buffer.has_next_chunk() {
-            let tokens = self.process_next_chunk()?;
-
-            // Send tokens to output ring buffer
-            for token in tokens {
-                let text = self.vocab.as_ref()
-                    .and_then(|v| v.decode_token(token.0))
-                    .map(|s| s.to_string());
-
-                let token_result = TokenResult {
-                    token_id: token.0,
-                    timestamp: token.1,
-                    confidence: 1.0, // TODO: Add confidence calculation
-                    text,
-                };
-
-                if self.token_producer.push(token_result).is_err() {
-                    // Output buffer full, could log warning
-                    break;
-                }
-            }
+            self.process_next_chunk()?;
         }
 
         Ok(())
     }
 
-    /// Update buffer from ring buffer
-    fn update_from_ring_buffer(&mut self) {
-        let mut samples = Vec::new();
-        while let Ok(sample) = self.audio_consumer.pop() {
-            samples.push(sample);
-        }
-        if !samples.is_empty() {
-            self.buffer.add_samples(&samples);
-        }
-    }
-
     /// Mark the audio stream as finished
     pub fn finalize(&mut self) {
-        self.update_from_ring_buffer();
         self.buffer.finish();
 
         // Process any remaining audio
@@ -293,15 +242,18 @@ impl StreamingParakeetTDT {
 
         // Process only the chunk portion (excluding context)
         let mut new_tokens = Vec::new();
-        let mut chunk_tokens = Vec::new(); // Local token history for this chunk
+        //let mut chunk_tokens = Vec::new(); // Local token history for this chunk
 
-        let start_frame = if self.buffer.position >= self.context.left_samples {
-            // Calculate frame offset for left context
-            (self.context.left_samples * encoder_len[0] as usize) / audio_lengths_val as usize
+        // Calculate the actual left context size in the current audio chunk
+        let actual_left_samples = if audio_chunk_shape >= self.context.left_samples + chunk_length {
+            self.context.left_samples
         } else {
-            0
+            // For early chunks, we might have less left context
+            audio_chunk_shape.saturating_sub(chunk_length)
         };
 
+        let start_frame =
+            (actual_left_samples * encoder_len[0] as usize) / audio_lengths_val as usize;
         let chunk_frames = (chunk_length * encoder_len[0] as usize) / audio_chunk_shape;
         let end_frame = std::cmp::min(start_frame + chunk_frames, encoder_len[0] as usize);
 
@@ -315,7 +267,7 @@ impl StreamingParakeetTDT {
             let encoding = encoder_out.slice(ndarray::s![0, frame_idx, ..]).to_owned();
 
             // Decode this frame
-            let (probs, step, new_state) = self.decode_frame(encoding, &chunk_tokens)?;
+            let (probs, _step, new_state) = self.decode_frame(encoding, &[self.previous_token])?;
 
             // Get token with highest probability
             let token = probs
@@ -330,14 +282,28 @@ impl StreamingParakeetTDT {
 
             if token != self.model.config.blank_idx as i32 {
                 self.state = Some(new_state);
-                chunk_tokens.push(token);
+                // chunk_tokens.push(token);
                 new_tokens.push((token, timestamp));
-            }
+                self.previous_token = token;
 
-            // Handle time advancement (simplified for streaming)
-            if step == 0 && token == self.model.config.blank_idx as i32 {
-                // Continue to next frame
-                continue;
+                // Send tokens to output ring buffer
+                let text = self
+                    .vocab
+                    .as_ref()
+                    .and_then(|v| v.decode_token(token))
+                    .map(|s| s.to_string());
+
+                let token_result = TokenResult {
+                    token_id: token,
+                    timestamp: frame_idx,
+                    confidence: 1.0, // TODO: Add confidence calculation
+                    text,
+                };
+
+                if self.token_producer.push(token_result).is_err() {
+                    // Output buffer full, could log warning
+                    break;
+                }
             }
         }
 
@@ -345,7 +311,11 @@ impl StreamingParakeetTDT {
     }
 
     /// Decode a single frame
-    fn decode_frame(&mut self, encoding: Array1<f32>, tokens: &[i32]) -> Result<(Array1<f32>, usize, State)> {
+    fn decode_frame(
+        &mut self,
+        encoding: Array1<f32>,
+        tokens: &[i32],
+    ) -> Result<(Array1<f32>, usize, State)> {
         let prev_state = self.state.clone().unwrap_or_else(|| State {
             h: Array3::<f32>::zeros((2, 1, 640)),
             c: Array3::<f32>::zeros((2, 1, 640)),
@@ -357,8 +327,6 @@ impl StreamingParakeetTDT {
     /// Reset the streaming state
     pub fn reset(&mut self) {
         self.buffer.reset();
-        // Clear input ring buffer
-        while self.audio_consumer.pop().is_ok() {}
         // Note: We can't clear the output buffer from here since we don't have access to the consumer
         self.state = None;
     }
@@ -390,18 +358,25 @@ mod tests {
     #[test]
     fn test_streaming_buffer() {
         let context = ContextConfig::new(0.1, 0.1, 0.1, 1000); // 100ms each
-        let mut buffer = StreamingAudioBuffer::new(context);
+
+        // Create ring buffer for testing
+        let (mut producer, consumer) = RingBuffer::new(1000);
+        let mut buffer = StreamingAudioBuffer::new(context, consumer);
 
         // Add some samples
         let samples: Vec<f32> = (0..500).map(|i| i as f32).collect();
-        buffer.add_samples(&samples);
+        for sample in &samples {
+            let _ = producer.push(*sample);
+        }
 
-        // Should not have chunk yet (need 300 samples total for full context)
+        // Should not have chunk yet (need chunk_samples + right_samples = 200 samples)
         assert!(!buffer.has_next_chunk());
 
         // Add more samples to reach the required context size
         let more_samples: Vec<f32> = (500..800).map(|i| i as f32).collect();
-        buffer.add_samples(&more_samples);
+        for sample in &more_samples {
+            let _ = producer.push(*sample);
+        }
 
         // Now should have a chunk
         assert!(buffer.has_next_chunk());

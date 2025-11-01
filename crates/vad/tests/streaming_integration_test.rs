@@ -8,7 +8,21 @@ use vad::{
     utils::{SampleRate, VadParams},
 };
 
-const MODEL_PATH: &str = "../../models/silero_vad.onnx";
+fn get_model_path() -> String {
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        format!("{}/../../models/silero_vad.onnx", manifest_dir)
+    } else {
+        "../../models/silero_vad.onnx".to_string()
+    }
+}
+
+fn get_audio_path(filename: &str) -> String {
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        format!("{}/../../audio/{}", manifest_dir, filename)
+    } else {
+        format!("../../audio/{}", filename)
+    }
+}
 
 fn load_wav_samples(path: &str) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
     let mut reader = WavReader::open(path)?;
@@ -21,7 +35,8 @@ fn load_wav_samples(path: &str) -> Result<Vec<f32>, Box<dyn std::error::Error>> 
 }
 
 fn create_streaming_vad() -> Result<(StreamingVad, Producer<f32>, Consumer<f32>), ort::Error> {
-    let silero = Silero::new(SampleRate::SixteenkHz, MODEL_PATH)?;
+    let model_path = get_model_path();
+    let silero = Silero::new(SampleRate::SixteenkHz, &model_path)?;
     let params = VadParams {
         frame_size: 64,
         threshold: 0.4,
@@ -40,7 +55,7 @@ async fn test_streaming_speech_detection_sample_1() {
         create_streaming_vad().expect("Failed to create streaming VAD");
 
     let samples =
-        load_wav_samples("tests/audio/sample_1.wav").expect("Failed to load sample_1.wav");
+        load_wav_samples(&get_audio_path("sample_1.wav")).expect("Failed to load sample_1.wav");
 
     // Process audio in chunks to simulate streaming
     let chunk_size = 1600; // 100ms at 16kHz
@@ -294,7 +309,7 @@ async fn test_streaming_real_audio_files() {
 
     // Test with birds.wav (should not detect speech)
     let birds_samples =
-        load_wav_samples("tests/audio/birds.wav").expect("Failed to load birds.wav");
+        load_wav_samples(&get_audio_path("birds.wav")).expect("Failed to load birds.wav");
 
     let chunk_size = 1600;
     let mut speech_samples = Vec::new();

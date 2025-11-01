@@ -22,7 +22,7 @@ fn load_wav_file(path: &Path) -> Result<(Array2<f32>, i64), Box<dyn std::error::
         hound::SampleFormat::Int => reader
             .samples::<i16>()
             .map(|s| s.map(|s| s as f32 / 32768.0))
-            .collect()
+            .collect(),
     };
 
     let samples = samples?;
@@ -79,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let audio_path = if args.len() > 1 {
         &args[1]
     } else {
-        "crates/vad/tests/audio/sample_1.wav"
+        "../../audio/sample_1.wav"
     };
 
     println!("=== DEBUG TRANSCRIPTION ===");
@@ -90,9 +90,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !audio_path.exists() {
         eprintln!("Error: Audio file not found: {}", audio_path.display());
         eprintln!("Available test files:");
-        eprintln!("  crates/vad/tests/audio/sample_1.wav");
-        eprintln!("  crates/vad/tests/audio/birds.wav");
-        eprintln!("  crates/vad/tests/audio/rooster.wav");
+        eprintln!("  ../../audio/sample_1.wav");
+        eprintln!("  ../../audio/birds.wav");
+        eprintln!("  ../../audio/rooster.wav");
         return Ok(());
     }
 

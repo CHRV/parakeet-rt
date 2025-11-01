@@ -2,7 +2,7 @@ use ndarray::Array1;
 use parakeet::error::Result;
 use parakeet::execution::ModelConfig as ExecutionConfig;
 use parakeet::parakeet_tdt::ParakeetTDTModel;
-use std::fs::{create_dir_all, File};
+use std::fs::{File, create_dir_all};
 use std::io::Write;
 use std::path::Path;
 
@@ -67,7 +67,10 @@ where
 
     // Create sample text file
     let sample_size = 20.min(data.len());
-    let mut sample_content = format!("Shape: {:?}\nDtype: float32\nFirst {} values:\n", shape, sample_size);
+    let mut sample_content = format!(
+        "Shape: {:?}\nDtype: float32\nFirst {} values:\n",
+        shape, sample_size
+    );
     for (i, &value) in data.iter().take(sample_size).enumerate() {
         sample_content.push_str(&format!("[{}]: {}\n", i, value));
     }
@@ -75,7 +78,10 @@ where
     let sample_path = output_dir.join(format!("rust_{}_sample.txt", filename));
     std::fs::write(&sample_path, sample_content)?;
 
-    println!("Saved rust_{}: shape={:?}, range=[{:.6}, {:.6}]", filename, shape, min_val, max_val);
+    println!(
+        "Saved rust_{}: shape={:?}, range=[{:.6}, {:.6}]",
+        filename, shape, min_val, max_val
+    );
 
     Ok(())
 }
@@ -84,8 +90,12 @@ where
 fn load_wav_simple(path: &str) -> Result<(Array1<f32>, u32)> {
     use hound::WavReader;
 
-    let mut reader = WavReader::open(path)
-        .map_err(|e| parakeet::error::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+    let mut reader = WavReader::open(path).map_err(|e| {
+        parakeet::error::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            e.to_string(),
+        ))
+    })?;
 
     let spec = reader.spec();
     let samples: std::result::Result<Vec<f32>, hound::Error> = reader
@@ -93,8 +103,12 @@ fn load_wav_simple(path: &str) -> Result<(Array1<f32>, u32)> {
         .map(|s| s.map(|sample| sample as f32 / 32768.0))
         .collect();
 
-    let samples = samples
-        .map_err(|e| parakeet::error::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+    let samples = samples.map_err(|e| {
+        parakeet::error::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            e.to_string(),
+        ))
+    })?;
 
     let audio = Array1::from_vec(samples);
     Ok((audio, spec.sample_rate))
@@ -111,16 +125,23 @@ fn main() -> Result<()> {
     println!("   Model loaded successfully");
 
     // 2. Load audio
-    let audio_path = "../vad/tests/audio/sample_1.wav";
+    let audio_path = "../../audio/sample_1.wav";
     println!("\n2. Loading audio: {}", audio_path);
 
     let (audio, sample_rate) = load_wav_simple(audio_path)?;
     println!("   Audio shape: {:?}", audio.shape());
     println!("   Sample rate: {}", sample_rate);
-    println!("   Duration: {:.2}s", audio.len() as f32 / sample_rate as f32);
+    println!(
+        "   Duration: {:.2}s",
+        audio.len() as f32 / sample_rate as f32
+    );
 
     // Save raw audio
-    save_debug_array(&audio, "01_raw_audio", "Raw audio samples (float32, normalized)")?;
+    save_debug_array(
+        &audio,
+        "01_raw_audio",
+        "Raw audio samples (float32, normalized)",
+    )?;
 
     // Add batch dimension
     let audio_len = audio.len();
@@ -138,8 +159,16 @@ fn main() -> Result<()> {
     println!("   Features lens: {:?}", features_lens);
     println!("   Features dtype: float32");
 
-    save_debug_array(&features, "03_preprocessed_features", "Preprocessed features from audio")?;
-    save_debug_array(&features_lens.mapv(|x| x as f32), "04_features_lengths", "Feature sequence lengths")?;
+    save_debug_array(
+        &features,
+        "03_preprocessed_features",
+        "Preprocessed features from audio",
+    )?;
+    save_debug_array(
+        &features_lens.mapv(|x| x as f32),
+        "04_features_lengths",
+        "Feature sequence lengths",
+    )?;
 
     // 4. Encoding
     println!("\n4. Encoding...");
@@ -150,8 +179,16 @@ fn main() -> Result<()> {
     println!("   Encoder output lens: {:?}", encoder_out_lens);
     println!("   Encoder output dtype: float32");
 
-    save_debug_array(&encoder_out, "05_encoder_output", "Encoder output (encoded features)")?;
-    save_debug_array(&encoder_out_lens.mapv(|x| x as f32), "06_encoder_lengths", "Encoder output sequence lengths")?;
+    save_debug_array(
+        &encoder_out,
+        "05_encoder_output",
+        "Encoder output (encoded features)",
+    )?;
+    save_debug_array(
+        &encoder_out_lens.mapv(|x| x as f32),
+        "06_encoder_lengths",
+        "Encoder output sequence lengths",
+    )?;
 
     // 5. Test full transcription
     println!("\n5. Testing full transcription...");
@@ -164,8 +201,12 @@ fn main() -> Result<()> {
 
                 // Save transcription result
                 let output_dir = Path::new("../../python/debug_outputs");
-                let result_content = format!("Tokens: {:?}\nTimestamps: {:?}\n", tokens, timestamps);
-                std::fs::write(output_dir.join("rust_transcription_result.txt"), result_content)?;
+                let result_content =
+                    format!("Tokens: {:?}\nTimestamps: {:?}\n", tokens, timestamps);
+                std::fs::write(
+                    output_dir.join("rust_transcription_result.txt"),
+                    result_content,
+                )?;
             }
         }
         Err(e) => {

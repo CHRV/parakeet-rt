@@ -251,7 +251,7 @@ Both examples will:
 - The Silero VAD model file at `../../models/silero_vad.onnx`
 
 **Output:**
-- Speech segments are saved to `speech_recordings/` (full example) or `recordings/` (simple example)
+- Speech segments are saved to `audio/speech_recordings/` (full example) or `audio/recordings/` (simple example)
 - Each file is named with a counter and timestamp: `speech_001_1234567890.wav`
 
 ## Testing
@@ -290,10 +290,10 @@ To quickly get started with real-time microphone VAD:
    ```
    🟢 Speech started!
    🔴 Speech ended! Duration: 2.34s
-   💾 Saved: recordings/speech_001.wav
+   💾 Saved: audio/recordings/speech_001.wav
    ```
 
-3. **Check the recordings folder** for your saved speech segments
+3. **Check the audio/recordings folder** for your saved speech segments
 
 4. **Press Ctrl+C** to stop recording
 

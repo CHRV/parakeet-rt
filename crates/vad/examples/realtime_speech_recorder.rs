@@ -13,7 +13,7 @@ use vad::{
     utils::{SampleRate, VadParams},
 };
 
-const MODEL_PATH: &str = "models/silero_vad.onnx";
+const MODEL_PATH: &str = "../../models/silero_vad.onnx";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Press Ctrl+C to stop recording.\n");
 
     // Create output directory
-    fs::create_dir_all("recordings")?;
+    fs::create_dir_all("audio/recordings")?;
 
     // Setup audio capture
     let host = cpal::default_host();
@@ -159,7 +159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("\n💾 Saving speech recording...");
 
                     // Save the continuous speech buffer
-                    let filename = format!("recordings/speech_session_{:03}.wav", recording_session);
+                    let filename = format!("audio/recordings/speech_session_{:03}.wav", recording_session);
                     let duration = continuous_speech_buffer.len() as f32 / 16000.0;
 
                     match save_audio(&continuous_speech_buffer, &filename, 16000) {
@@ -186,7 +186,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if !continuous_speech_buffer.is_empty() {
         println!("💾 Saving final speech recording...");
-        let filename = format!("recordings/speech_session_{:03}.wav", recording_session);
+        let filename = format!(
+            "audio/recordings/speech_session_{:03}.wav",
+            recording_session
+        );
         let duration = continuous_speech_buffer.len() as f32 / 16000.0;
 
         match save_audio(&continuous_speech_buffer, &filename, 16000) {

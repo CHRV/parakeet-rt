@@ -8,7 +8,21 @@ use vad::{
     utils::{SampleRate, VadParams},
 };
 
-const MODEL_PATH: &str = "../../models/silero_vad.onnx";
+fn get_model_path() -> String {
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        format!("{}/../../models/silero_vad.onnx", manifest_dir)
+    } else {
+        "../../models/silero_vad.onnx".to_string()
+    }
+}
+
+fn get_audio_path(filename: &str) -> String {
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        format!("{}/../../audio/{}", manifest_dir, filename)
+    } else {
+        format!("../../audio/{}", filename)
+    }
+}
 
 fn load_wav_samples(path: &str) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
     let mut reader = WavReader::open(path)?;
@@ -21,7 +35,8 @@ fn load_wav_samples(path: &str) -> Result<Vec<f32>, Box<dyn std::error::Error>> 
 }
 
 fn create_streaming_vad() -> Result<(StreamingVad, Producer<f32>, Consumer<f32>), ort::Error> {
-    let silero = Silero::new(SampleRate::SixteenkHz, MODEL_PATH)?;
+    let model_path = get_model_path();
+    let silero = Silero::new(SampleRate::SixteenkHz, &model_path)?;
     let params = VadParams::default();
     Ok(StreamingVad::new(silero, params))
 }
@@ -71,7 +86,7 @@ async fn test_speech_detection_sample_1() {
         create_streaming_vad().expect("Failed to create streaming VAD");
 
     let samples =
-        load_wav_samples("tests/audio/sample_1.wav").expect("Failed to load sample_1.wav");
+        load_wav_samples(&get_audio_path("sample_1.wav")).expect("Failed to load sample_1.wav");
 
     let speech_samples = process_audio_and_collect_speech(
         &mut vad,
@@ -122,7 +137,7 @@ async fn test_no_speech_detection_birds() {
     let (mut vad, mut audio_producer, mut speech_consumer) =
         create_streaming_vad().expect("Failed to create streaming VAD");
 
-    let samples = load_wav_samples("tests/audio/birds.wav").expect("Failed to load birds.wav");
+    let samples = load_wav_samples(&get_audio_path("birds.wav")).expect("Failed to load birds.wav");
 
     let speech_samples = process_audio_and_collect_speech(
         &mut vad,
@@ -155,7 +170,8 @@ async fn test_no_speech_detection_rooster() {
     let (mut vad, mut audio_producer, mut speech_consumer) =
         create_streaming_vad().expect("Failed to create streaming VAD");
 
-    let samples = load_wav_samples("tests/audio/rooster.wav").expect("Failed to load rooster.wav");
+    let samples =
+        load_wav_samples(&get_audio_path("rooster.wav")).expect("Failed to load rooster.wav");
 
     let speech_samples = process_audio_and_collect_speech(
         &mut vad,
@@ -185,8 +201,9 @@ async fn test_no_speech_detection_rooster() {
 
 #[tokio::test]
 async fn test_vad_with_custom_params() {
+    let model_path = get_model_path();
     let silero =
-        Silero::new(SampleRate::SixteenkHz, MODEL_PATH).expect("Failed to create Silero model");
+        Silero::new(SampleRate::SixteenkHz, &model_path).expect("Failed to create Silero model");
 
     let custom_params = VadParams {
         frame_size: 32,
@@ -201,7 +218,7 @@ async fn test_vad_with_custom_params() {
     let (mut vad, mut audio_producer, mut speech_consumer) =
         StreamingVad::new(silero, custom_params);
     let samples =
-        load_wav_samples("tests/audio/sample_1.wav").expect("Failed to load sample_1.wav");
+        load_wav_samples(&get_audio_path("sample_1.wav")).expect("Failed to load sample_1.wav");
 
     let speech_samples = process_audio_and_collect_speech(
         &mut vad,
@@ -300,7 +317,7 @@ async fn test_silence_audio() {
 #[tokio::test]
 async fn test_multiple_processing_calls() {
     let samples =
-        load_wav_samples("tests/audio/sample_1.wav").expect("Failed to load sample_1.wav");
+        load_wav_samples(&get_audio_path("sample_1.wav")).expect("Failed to load sample_1.wav");
 
     // First processing
     let (mut vad1, mut audio_producer1, mut speech_consumer1) =

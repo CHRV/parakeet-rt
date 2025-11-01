@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 cpal = "0.16.0"
 ndarray = "0.16.1"
-ort = { version = "2.0.0-rc.10", features=["ndarray"]}
+ort = { version = "2.0.0-rc.10", features = ["ndarray"] }
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.17"
 tracing = "0.1"

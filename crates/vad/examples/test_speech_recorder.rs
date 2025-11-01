@@ -8,7 +8,7 @@ use vad::{
     utils::{SampleRate, VadParams},
 };
 
-const MODEL_PATH: &str = "models/silero_vad.onnx";
+const MODEL_PATH: &str = "../../models/silero_vad.onnx";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -16,7 +16,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("This example tests the speech recording functionality with simulated audio.\n");
 
     // Create output directory
-    fs::create_dir_all("test_recordings")?;
+    fs::create_dir_all("audio/test_recordings")?;
 
     // Initialize VAD with optimized parameters
     let silero = Silero::new(SampleRate::SixteenkHz, MODEL_PATH)?;
@@ -123,7 +123,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Save the recorded speech
     if !continuous_speech_buffer.is_empty() {
-        let filename = format!("test_recordings/test_speech_{:03}.wav", recording_session);
+        let filename = format!(
+            "audio/test_recordings/test_speech_{:03}.wav",
+            recording_session
+        );
         let duration = continuous_speech_buffer.len() as f32 / 16000.0;
 
         println!("💾 Saving test recording...");
@@ -183,7 +186,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     vad.finalize();
 
     if !continuous_speech_buffer.is_empty() {
-        let filename = format!("test_recordings/test_speech_{:03}.wav", recording_session);
+        let filename = format!(
+            "audio/test_recordings/test_speech_{:03}.wav",
+            recording_session
+        );
         let duration = continuous_speech_buffer.len() as f32 / 16000.0;
 
         println!("💾 Saving final test recording...");
@@ -203,7 +209,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("\n🎉 Test completed successfully!");
-    println!("📁 Check the 'test_recordings' directory for generated WAV files");
+    println!("📁 Check the 'audio/test_recordings' directory for generated WAV files");
     println!("🔍 The recordings should contain only speech audio without silence");
 
     Ok(())

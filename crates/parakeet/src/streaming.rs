@@ -1,5 +1,6 @@
 use crate::error::Result;
 use crate::parakeet_tdt::{ParakeetTDTModel, State};
+use crate::vocab::Vocabulary;
 use ndarray::{Array1, Array2, Array3};
 use rtrb::{Consumer, Producer, RingBuffer};
 
@@ -149,6 +150,7 @@ pub struct TokenResult {
     pub token_id: i32,
     pub timestamp: usize,
     pub confidence: f32,
+    pub text: Option<String>,
 }
 
 /// Streaming inference engine for Parakeet TDT
@@ -165,6 +167,8 @@ pub struct StreamingParakeetTDT {
     buffer: StreamingAudioBuffer,
     /// Current decoder state
     state: Option<State>,
+    /// Vocabulary for token decoding
+    vocab: Option<Vocabulary>,
     /// Sample rate
     _sample_rate: usize,
     /// Input buffer size
@@ -181,6 +185,17 @@ impl StreamingParakeetTDT {
         context: ContextConfig,
         sample_rate: usize
     ) -> (Self, Producer<f32>, Consumer<TokenResult>) {
+        Self::new_with_vocab(model, context, sample_rate, None)
+    }
+
+    /// Create new streaming inference engine with vocabulary
+    /// Returns (engine, audio_producer, token_consumer)
+    pub fn new_with_vocab(
+        model: ParakeetTDTModel,
+        context: ContextConfig,
+        sample_rate: usize,
+        vocab: Option<Vocabulary>
+    ) -> (Self, Producer<f32>, Consumer<TokenResult>) {
         // Buffer sizes optimized for real-time processing
         let rx_buffer_size = sample_rate * 2; // 2 seconds of input audio buffer
         let tx_buffer_size = 1000; // Buffer for 1000 tokens
@@ -196,6 +211,7 @@ impl StreamingParakeetTDT {
             token_producer,
             buffer: StreamingAudioBuffer::new(context),
             state: None,
+            vocab,
             _sample_rate: sample_rate,
             rx_buffer_size,
             tx_buffer_size,
@@ -216,10 +232,15 @@ impl StreamingParakeetTDT {
 
             // Send tokens to output ring buffer
             for token in tokens {
+                let text = self.vocab.as_ref()
+                    .and_then(|v| v.decode_token(token.0))
+                    .map(|s| s.to_string());
+
                 let token_result = TokenResult {
                     token_id: token.0,
                     timestamp: token.1,
                     confidence: 1.0, // TODO: Add confidence calculation
+                    text,
                 };
 
                 if self.token_producer.push(token_result).is_err() {

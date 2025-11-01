@@ -5,12 +5,34 @@ use cpal::{Device, Host, Sample, SampleFormat, SampleRate, Stream, StreamConfig}
 use parakeet::execution::ModelConfig as ExecutionConfig;
 use parakeet::parakeet_tdt::ParakeetTDTModel;
 use parakeet::streaming::{ContextConfig, StreamingParakeetTDT, TokenResult};
+use parakeet::vocab::Vocabulary;
 use rtrb;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+
+/// Convert a single token to text with proper spacing
+fn token_to_text(token_text: &str, is_first_token: bool) -> Option<String> {
+    if token_text.starts_with('<') && token_text.ends_with('>') {
+        // Special tokens like <|endoftext|> - skip them for clean output
+        return None;
+    }
+
+    if token_text.starts_with("▁") {
+        // SentencePiece space prefix - replace with actual space
+        let text_part = &token_text[3..]; // Skip the ▁ character (3 bytes in UTF-8)
+        if is_first_token {
+            Some(text_part.to_string())
+        } else {
+            Some(format!(" {}", text_part))
+        }
+    } else {
+        // Regular token - append directly (no space)
+        Some(token_text.to_string())
+    }
+}
 
 mod output;
 use output::{AudioWriter, OutputFormat, OutputWriter};
@@ -200,11 +222,8 @@ fn transcription_worker(
     mut token_consumer: rtrb::Consumer<TokenResult>,
     output_writer: OutputWriter,
     running: Arc<AtomicBool>,
-) -> (OutputWriter, usize) {
-    println!("Transcription worker started");
-
-    let mut last_print_time = std::time::Instant::now();
-    let mut total_tokens = 0;
+) -> OutputWriter {
+    let mut text_buffer = String::new();
 
     while running.load(Ordering::Relaxed) {
         // Process audio through the streaming engine
@@ -221,14 +240,35 @@ fn transcription_worker(
 
         // Process tokens if any were detected
         if !new_tokens.is_empty() {
-            total_tokens += new_tokens.len();
-
-            // Print tokens to console
-            println!("Detected {} tokens:", new_tokens.len());
+            // Collect tokens for text reconstruction
+            let mut text_parts = Vec::new();
             for token_result in &new_tokens {
-                let token_time = token_result.timestamp as f32 / 16000.0;
-                println!("  Token {} at {:.3}s (conf: {:.3})",
-                    token_result.token_id, token_time, token_result.confidence);
+                if let Some(ref text) = token_result.text {
+                    text_parts.push(text.clone());
+                }
+            }
+
+            // Process each token immediately for streaming output
+            for token_result in &new_tokens {
+                if let Some(ref token_text) = token_result.text {
+                    // Convert token to text with proper spacing
+                    if let Some(text_part) = token_to_text(token_text, text_buffer.is_empty()) {
+                        // Add to buffer for sentence detection
+                        text_buffer.push_str(&text_part);
+
+                        // Stream output immediately
+                        print!("{}", text_part);
+                        use std::io::{self, Write};
+                        io::stdout().flush().unwrap(); // Force immediate output
+
+                        // Check for sentence endings and add newlines
+                        if text_part.contains('.') || text_part.contains('?') || text_part.contains('!') {
+                            println!(); // New line after sentence
+                            io::stdout().flush().unwrap();
+                            text_buffer.clear(); // Clear buffer after complete sentence
+                        }
+                    }
+                }
             }
 
             // Write tokens to output file
@@ -237,19 +277,19 @@ fn transcription_worker(
             }
         }
 
-        // Print status every 5 seconds
-        if last_print_time.elapsed() > Duration::from_secs(5) {
-            println!("Processing audio... (Total tokens: {})", total_tokens);
-            last_print_time = std::time::Instant::now();
-        }
-
         // Small sleep to prevent busy waiting
         thread::sleep(Duration::from_millis(10));
     }
 
-    println!("Transcription worker stopped (Total tokens processed: {})", total_tokens);
-    (output_writer, total_tokens)
+    // Print any remaining text in buffer when stopping
+    if !text_buffer.trim().is_empty() {
+        println!("{}", text_buffer.trim());
+    }
+
+    output_writer
 }
+
+
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -290,6 +330,26 @@ async fn main() -> Result<()> {
     let model = ParakeetTDTModel::from_pretrained(&args.models, exec_config)?;
     println!("✓ Model loaded successfully");
 
+    // Load vocabulary
+    let vocab_path = Path::new(&args.models).join("vocab.txt");
+    let vocab = if vocab_path.exists() {
+        match Vocabulary::from_file(&vocab_path) {
+            Ok(v) => {
+                println!("✓ Vocabulary loaded ({} tokens)", v.size());
+                Some(v)
+            }
+            Err(e) => {
+                println!("⚠ Failed to load vocabulary: {}", e);
+                println!("  Tokens will be displayed as IDs");
+                None
+            }
+        }
+    } else {
+        println!("⚠ Vocabulary file not found at {}", vocab_path.display());
+        println!("  Tokens will be displayed as IDs");
+        None
+    };
+
     // Setup streaming configuration
     let context = ContextConfig::new(
         args.left_context,
@@ -306,7 +366,7 @@ async fn main() -> Result<()> {
 
     // Create streaming engine
     let (streaming_engine, audio_producer, token_consumer) =
-        StreamingParakeetTDT::new(model, context, args.sample_rate as usize);
+        StreamingParakeetTDT::new_with_vocab(model, context, args.sample_rate as usize, vocab);
 
     // Setup audio capture
     let host = cpal::default_host();
@@ -343,7 +403,7 @@ async fn main() -> Result<()> {
     });
 
     // Wait for shutdown
-    let (output_writer, _total_tokens) = transcription_handle.join().unwrap();
+    let output_writer = transcription_handle.join().unwrap();
 
     // Drop audio capture to release the AudioWriter reference
     drop(audio_capture);

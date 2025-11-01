@@ -29,7 +29,7 @@ impl OutputFormat {
 pub struct TokenOutput {
     pub timestamp: usize,
     pub token_id: i32,
-    pub confidence: f32,
+    pub text: Option<String>,
     pub time_seconds: f32,
     pub session_time: f32,
 }
@@ -55,7 +55,7 @@ impl OutputWriter {
 
             // Write headers for CSV format
             if matches!(format, OutputFormat::Csv) && !append {
-                writeln!(buf_writer, "timestamp,token_id,confidence,time_seconds")?;
+                writeln!(buf_writer, "timestamp,token_id,text,time_seconds")?;
             }
 
             Some(Arc::new(Mutex::new(buf_writer)))
@@ -81,8 +81,11 @@ impl OutputWriter {
                 match self.format {
                     OutputFormat::Txt => {
                         let mut writer = writer.lock().unwrap();
-                        writeln!(writer, "[{:.3}s] Token {} (conf: {:.3})",
-                            time_seconds, token.token_id, token.confidence)?;
+                        if let Some(ref text) = token.text {
+                            writeln!(writer, "[{:.3}s] {}", time_seconds, text)?;
+                        } else {
+                            writeln!(writer, "[{:.3}s] Token {}", time_seconds, token.token_id)?;
+                        }
                         writer.flush()?;
                     }
                     OutputFormat::Json => {
@@ -90,7 +93,7 @@ impl OutputWriter {
                         let token_output = TokenOutput {
                             timestamp: token.timestamp,
                             token_id: token.token_id,
-                            confidence: token.confidence,
+                            text: token.text.clone(),
                             time_seconds,
                             session_time,
                         };
@@ -98,8 +101,9 @@ impl OutputWriter {
                     }
                     OutputFormat::Csv => {
                         let mut writer = writer.lock().unwrap();
-                        writeln!(writer, "{},{},{:.3},{:.3}",
-                            token.timestamp, token.token_id, token.confidence, time_seconds)?;
+                        let text_field = token.text.as_deref().unwrap_or("");
+                        writeln!(writer, "{},{},\"{}\",{:.3}",
+                            token.timestamp, token.token_id, text_field, time_seconds)?;
                         writer.flush()?;
                     }
                 }

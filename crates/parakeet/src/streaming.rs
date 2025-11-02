@@ -44,15 +44,19 @@ pub struct StreamingAudioBuffer {
     context: ContextConfig,
     /// Whether we've reached the end of the stream
     is_finished: bool,
+    /// Internal buffer to maintain context across chunks
+    context_buffer: Vec<f32>,
 }
 
 impl StreamingAudioBuffer {
     /// Create new streaming buffer with audio consumer
     pub fn new(context: ContextConfig, audio_consumer: Consumer<f32>) -> Self {
+        let context_len = context.left_samples + context.right_samples;
         Self {
             audio_consumer,
             context,
             is_finished: false,
+            context_buffer: vec![0.0f32; context_len],
         }
     }
 
@@ -63,13 +67,15 @@ impl StreamingAudioBuffer {
 
     /// Check if there's enough data for the next chunk
     pub fn has_next_chunk(&self) -> bool {
+        let available = self.audio_consumer.slots();
+
         if self.is_finished {
             // If finished, we can process any remaining samples
-            self.audio_consumer.slots() > self.context.left_samples
+            available > 0 || !self.context_buffer.is_empty()
         } else {
-            // Need at least chunk_samples + right_samples for processing
-            // (left context will be built up over time)
-            self.audio_consumer.slots() >= self.context.total_samples()
+            // Need at least chunk_samples + right_samples available
+            // The left context comes from our internal buffer
+            available >= self.context.chunk_samples + self.context.right_samples
         }
     }
 
@@ -81,48 +87,76 @@ impl StreamingAudioBuffer {
 
         let available_samples = self.audio_consumer.slots();
 
-        let read_size = if self.is_finished {
-            // For the last chunk, take all remaining samples
-            available_samples
+        // Determine how many new samples to read
+        let new_samples_needed = if self.is_finished {
+            available_samples // Read all remaining
         } else {
-            // Read as much context as we can, up to total_samples
-            std::cmp::min(available_samples, self.context.total_samples())
+            self.context.chunk_samples + self.context.right_samples
         };
 
-        match self.audio_consumer.read_chunk(read_size) {
-            Ok(frame) => {
-                let (first, second) = frame.as_slices();
-                let frame_data = [first, second].concat();
-
-                // Only commit the chunk size, not the entire context
-                let commit_size = if self.is_finished {
-                    frame_data.len() // Commit all remaining samples when finished
-                } else {
-                    self.context.chunk_samples // Only commit the chunk portion
-                };
-
-                // Commit only the chunk size to advance the buffer position
-                frame.commit(commit_size);
-
-                // Create batch array [1, samples] with full context
-                let audio_array = Array2::from_shape_vec((1, frame_data.len()), frame_data)
-                    .map_err(|_| ())
-                    .ok()?;
-
-                // The chunk length is the actual processing size (excluding context padding)
-                let chunk_length = commit_size;
-
-                Some((audio_array, chunk_length))
+        // Read new samples from the ring buffer
+        let mut new_samples = Vec::with_capacity(new_samples_needed);
+        for _ in 0..new_samples_needed {
+            if let Ok(sample) = self.audio_consumer.pop() {
+                new_samples.push(sample);
+            } else {
+                break;
             }
-            Err(_) => None, // No more complete chunks available
         }
+
+        // Build the complete frame with context
+        let mut frame_data = Vec::new();
+
+        // Add left context from our buffer
+        let left_context_start = self
+            .context_buffer
+            .len()
+            .saturating_sub(self.context.left_samples);
+        frame_data.extend_from_slice(&self.context_buffer[left_context_start..]);
+
+        // Add new samples
+        frame_data.extend_from_slice(&new_samples);
+
+        if frame_data.is_empty() {
+            return None;
+        }
+
+        // Determine the actual chunk size (excluding context)
+        let chunk_length = if self.is_finished {
+            // When finished, process all remaining samples
+            new_samples.len()
+        } else {
+            // Normal operation: chunk_samples
+            self.context.chunk_samples
+        };
+
+        // Update context buffer for next iteration
+        // Keep the last (left_samples + chunk_samples) for the next chunk's left context
+        let keep_size = self.context.left_samples + self.context.chunk_samples;
+        if frame_data.len() > keep_size {
+            self.context_buffer = frame_data[frame_data.len() - keep_size..].to_vec();
+        } else {
+            self.context_buffer = frame_data.clone();
+        }
+
+        // Create batch array [1, samples] with full context
+        let audio_array = Array2::from_shape_vec((1, frame_data.len()), frame_data)
+            .map_err(|_| ())
+            .ok()?;
+
+        Some((audio_array, chunk_length))
     }
 
     /// Reset buffer for new stream
     pub fn reset(&mut self) {
         // Clear ring buffer by consuming all available samples
+
+        let context_len = self.context.left_samples + self.context.right_samples;
+
         while self.audio_consumer.pop().is_ok() {}
         self.is_finished = false;
+        self.context_buffer.clear();
+        self.context_buffer.resize(context_len, 0.0);
     }
 }
 
@@ -359,13 +393,14 @@ mod tests {
     #[test]
     fn test_streaming_buffer() {
         let context = ContextConfig::new(0.1, 0.1, 0.1, 1000); // 100ms each
+        // left_samples = 100, chunk_samples = 100, right_samples = 100
 
         // Create ring buffer for testing
         let (mut producer, consumer) = RingBuffer::new(1000);
-        let mut buffer = StreamingAudioBuffer::new(context, consumer);
+        let mut buffer = StreamingAudioBuffer::new(context.clone(), consumer);
 
-        // Add some samples
-        let samples: Vec<f32> = (0..500).map(|i| i as f32).collect();
+        // Add some samples (less than chunk + right context needed)
+        let samples: Vec<f32> = (0..150).map(|i| i as f32).collect();
         for sample in &samples {
             let _ = producer.push(*sample);
         }
@@ -373,17 +408,36 @@ mod tests {
         // Should not have chunk yet (need chunk_samples + right_samples = 200 samples)
         assert!(!buffer.has_next_chunk());
 
-        // Add more samples to reach the required context size
-        let more_samples: Vec<f32> = (500..800).map(|i| i as f32).collect();
+        // Add more samples to reach the required size
+        let more_samples: Vec<f32> = (150..250).map(|i| i as f32).collect();
         for sample in &more_samples {
             let _ = producer.push(*sample);
         }
 
-        // Now should have a chunk
+        // Now should have a chunk (250 samples >= 200 needed)
         assert!(buffer.has_next_chunk());
 
         let (chunk, length) = buffer.get_next_chunk().unwrap();
         assert_eq!(chunk.shape()[0], 1); // batch size
         assert_eq!(length, 100); // chunk length
+
+        // After processing first chunk:
+        // - We consumed chunk_samples (100) + right_samples (100) = 200 from ring buffer
+        // - Ring buffer now has 50 samples left
+        // - Context buffer has 200 samples (left_samples + chunk_samples)
+        // - Need 200 more samples in ring buffer for next chunk
+        assert!(!buffer.has_next_chunk());
+
+        // Add enough samples for second chunk
+        let more_samples2: Vec<f32> = (250..450).map(|i| i as f32).collect();
+        for sample in &more_samples2 {
+            let _ = producer.push(*sample);
+        }
+
+        // Now should have second chunk (50 + 200 = 250 samples >= 200 needed)
+        assert!(buffer.has_next_chunk());
+        let (chunk2, length2) = buffer.get_next_chunk().unwrap();
+        assert_eq!(chunk2.shape()[0], 1);
+        assert_eq!(length2, 100);
     }
 }

@@ -185,8 +185,6 @@ pub struct StreamingParakeetTDT {
     state: Option<State>,
     /// Vocabulary for token decoding
     vocab: Option<Vocabulary>,
-    /// Sample rate
-    _sample_rate: usize,
     /// Input buffer size
     rx_buffer_size: usize,
     /// Output buffer size
@@ -201,9 +199,8 @@ impl StreamingParakeetTDT {
     pub fn new(
         model: ParakeetTDTModel,
         context: ContextConfig,
-        sample_rate: usize,
     ) -> (Self, Producer<f32>, Consumer<TokenResult>) {
-        Self::new_with_vocab(model, context, sample_rate, None)
+        Self::new_with_vocab(model, context, None)
     }
 
     /// Create new streaming inference engine with vocabulary
@@ -211,7 +208,6 @@ impl StreamingParakeetTDT {
     pub fn new_with_vocab(
         model: ParakeetTDTModel,
         context: ContextConfig,
-        sample_rate: usize,
         vocab: Option<Vocabulary>,
     ) -> (Self, Producer<f32>, Consumer<TokenResult>) {
         // Buffer sizes optimized for real-time processing
@@ -230,7 +226,6 @@ impl StreamingParakeetTDT {
             buffer: StreamingAudioBuffer::new(context, audio_consumer),
             state: None,
             vocab,
-            _sample_rate: sample_rate,
             rx_buffer_size,
             tx_buffer_size,
             previous_token,

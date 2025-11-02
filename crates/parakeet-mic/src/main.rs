@@ -407,7 +407,7 @@ async fn main() -> Result<()> {
 
     // Create streaming engine
     let (streaming_engine, audio_producer, token_consumer) =
-        StreamingParakeetTDT::new_with_vocab(model, context, args.sample_rate as usize, vocab);
+        StreamingParakeetTDT::new_with_vocab(model, context, vocab);
 
     // Setup audio capture
     let host = cpal::default_host();

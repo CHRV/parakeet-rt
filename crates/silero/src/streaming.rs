@@ -1,7 +1,7 @@
-use crate::{silero, utils};
-use rtrb::{Consumer, Producer, RingBuffer};
+use crate::{model, utils};
 use async_trait::async_trait;
 use frame_processor::FrameProcessor;
+use rtrb::{Consumer, Producer, RingBuffer};
 
 #[derive(Debug, Clone)]
 pub struct SpeechSegment {
@@ -33,7 +33,7 @@ pub enum VadEvent {
 }
 
 pub struct StreamingVad {
-    silero: silero::Silero,
+    silero: model::Silero,
     params: Params,
     state: State,
     audio_consumer: Consumer<f32>,
@@ -207,7 +207,7 @@ impl State {
 
 impl StreamingVad {
     pub fn new(
-        silero: silero::Silero,
+        silero: model::Silero,
         params: utils::VadParams,
     ) -> (Self, Producer<f32>, Consumer<f32>) {
         let params = Params::from(params);
@@ -349,7 +349,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_streaming_vad_basic() {
-        let silero = silero::Silero::new(SampleRate::SixteenkHz, "../../models/silero_vad.onnx")
+        let silero = model::Silero::new(SampleRate::SixteenkHz, "../../models/silero_vad.onnx")
             .expect("Failed to create Silero model");
 
         let params = utils::VadParams::default();

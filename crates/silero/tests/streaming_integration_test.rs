@@ -2,7 +2,7 @@ use hound::WavReader;
 use rtrb::{Consumer, Producer};
 use silero::{
     StreamingVad,
-    silero::Silero,
+    model::Silero,
     utils::{SampleRate, VadParams},
 };
 use std::time::Duration;

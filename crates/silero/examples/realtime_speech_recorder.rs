@@ -3,7 +3,7 @@ use cpal::{SampleRate as CpalSampleRate, StreamConfig};
 use hound::{WavSpec, WavWriter};
 use silero::{
     StreamingVad,
-    silero::Silero,
+    model::Silero,
     utils::{SampleRate, VadParams},
 };
 use std::fs;

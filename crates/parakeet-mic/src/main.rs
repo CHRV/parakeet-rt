@@ -3,7 +3,7 @@ use clap::Parser;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Host, Sample, SampleFormat, SampleRate, Stream, StreamConfig};
 use parakeet::execution::ModelConfig as ExecutionConfig;
-use parakeet::parakeet_tdt::ParakeetTDTModel;
+use parakeet::model::ParakeetTDTModel;
 use parakeet::streaming::{ContextConfig, StreamingParakeetTDT, TokenResult};
 use parakeet::vocab::Vocabulary;
 use rtrb;

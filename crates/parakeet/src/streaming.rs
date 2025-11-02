@@ -1,10 +1,10 @@
 use crate::error::Result;
-use crate::parakeet_tdt::{ParakeetTDTModel, State};
+use crate::model::{ParakeetTDTModel, State};
 use crate::vocab::Vocabulary;
-use ndarray::{Array1, Array2, Array3};
-use rtrb::{Consumer, Producer, RingBuffer};
 use async_trait::async_trait;
 use frame_processor::FrameProcessor;
+use ndarray::{Array1, Array2, Array3};
+use rtrb::{Consumer, Producer, RingBuffer};
 
 /// Context configuration for streaming inference
 #[derive(Debug, Clone)]

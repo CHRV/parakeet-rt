@@ -1,17 +1,17 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleRate as CpalSampleRate, StreamConfig};
 use hound::{WavSpec, WavWriter};
+use silero::{
+    StreamingVad,
+    silero::Silero,
+    utils::{SampleRate, VadParams},
+};
 use std::fs;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
-use vad::{
-    StreamingVad,
-    silero::Silero,
-    utils::{SampleRate, VadParams},
-};
 
 const MODEL_PATH: &str = "../../models/silero_vad.onnx";
 

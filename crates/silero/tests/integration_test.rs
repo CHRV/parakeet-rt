@@ -1,12 +1,12 @@
 use hound::WavReader;
 use rtrb::{Consumer, Producer};
-use std::time::Duration;
-use tokio::time::sleep;
-use vad::{
+use silero::{
     StreamingVad,
     silero::Silero,
     utils::{SampleRate, VadParams},
 };
+use std::time::Duration;
+use tokio::time::sleep;
 
 fn get_model_path() -> String {
     if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {

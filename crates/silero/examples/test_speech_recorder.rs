@@ -1,12 +1,12 @@
 use hound::{WavSpec, WavWriter};
-use std::fs;
-use std::time::Duration;
-use tokio::time::sleep;
-use vad::{
+use silero::{
     StreamingVad,
     silero::Silero,
     utils::{SampleRate, VadParams},
 };
+use std::fs;
+use std::time::Duration;
+use tokio::time::sleep;
 
 const MODEL_PATH: &str = "../../models/silero_vad.onnx";
 

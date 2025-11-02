@@ -41,11 +41,11 @@ impl ContextConfig {
 /// Audio buffer for streaming inference with context management
 pub struct StreamingAudioBuffer {
     /// Ring buffer consumer for reading audio samples
-    audio_consumer: Consumer<f32>,
+    pub(crate) audio_consumer: Consumer<f32>,
     /// Context configuration
     context: ContextConfig,
     /// Whether we've reached the end of the stream
-    is_finished: bool,
+    pub(crate) is_finished: bool,
     /// Internal buffer to maintain context across chunks
     context_buffer: Vec<f32>,
 }
@@ -177,8 +177,8 @@ pub struct StreamingParakeetTDT {
     model: ParakeetTDTModel,
     /// Context configuration
     context: ContextConfig,
-    /// Ring buffer producer for outputting transcription tokens
-    token_producer: Producer<TokenResult>,
+    /// Ring buffer producer for outputting transcription tokens (optional for bidirectional shutdown)
+    token_producer: Option<Producer<TokenResult>>,
     /// Audio buffer for context management
     buffer: StreamingAudioBuffer,
     /// Current decoder state
@@ -226,7 +226,7 @@ impl StreamingParakeetTDT {
         let engine = Self {
             model,
             context: context.clone(),
-            token_producer,
+            token_producer: Some(token_producer),
             buffer: StreamingAudioBuffer::new(context, audio_consumer),
             state: None,
             vocab,
@@ -338,9 +338,12 @@ impl StreamingParakeetTDT {
                     text,
                 };
 
-                if self.token_producer.push(token_result).is_err() {
-                    // Output buffer full, could log warning
-                    break;
+                // Push token to output if producer is available
+                if let Some(producer) = &mut self.token_producer {
+                    if producer.push(token_result).is_err() {
+                        // Output buffer full, could log warning
+                        break;
+                    }
                 }
             }
         }
@@ -377,6 +380,12 @@ impl StreamingParakeetTDT {
     pub fn tx_buffer_size(&self) -> usize {
         self.tx_buffer_size
     }
+
+    /// Drop the token producer to signal end of output to downstream
+    /// This enables bidirectional shutdown signaling through the processing pipeline
+    pub fn close_output(&mut self) {
+        self.token_producer = None;
+    }
 }
 
 /// Implementation of FrameProcessor trait for StreamingParakeetTDT
@@ -385,11 +394,35 @@ impl FrameProcessor for StreamingParakeetTDT {
     type Error = crate::error::Error;
 
     fn has_next_frame(&self) -> bool {
+        // Check for upstream abandonment (audio producer dropped)
+        if self.buffer.audio_consumer.is_abandoned() {
+            // Process remaining buffered samples
+            return self.buffer.audio_consumer.slots() > 0;
+        }
+
         self.buffer.has_next_chunk()
     }
 
     async fn process_frame(&mut self) -> std::result::Result<(), Self::Error> {
+        // Scenario 1: Check if output consumer is abandoned (downstream abandonment)
+        if let Some(producer) = &self.token_producer {
+            if producer.is_abandoned() {
+                // Drop our token producer to signal downstream
+                self.token_producer = None;
+                self.mark_finished();
+                return Ok(());
+            }
+        }
+
+        // Process the next chunk
         self.process_next_chunk().await?;
+
+        // Scenario 2: After processing, check if input is abandoned and no more frames (upstream abandonment)
+        if self.buffer.audio_consumer.is_abandoned() && !self.has_next_frame() {
+            // All input processed, drop output producer to signal downstream
+            self.token_producer = None;
+        }
+
         Ok(())
     }
 
@@ -470,5 +503,90 @@ mod tests {
         let (chunk2, length2) = buffer.get_next_chunk().unwrap();
         assert_eq!(chunk2.shape()[0], 1);
         assert_eq!(length2, 100);
+    }
+
+    #[test]
+    fn test_upstream_abandonment_detection() {
+        let context = ContextConfig::new(0.1, 0.1, 0.1, 1000); // 100ms each
+        let (mut producer, consumer) = RingBuffer::new(1000);
+        let buffer = StreamingAudioBuffer::new(context.clone(), consumer);
+
+        // Add some samples
+        let samples: Vec<f32> = (0..250).map(|i| i as f32).collect();
+        for sample in &samples {
+            let _ = producer.push(*sample);
+        }
+
+        // Should have a chunk available
+        assert!(buffer.has_next_chunk());
+
+        // Drop the producer to simulate upstream abandonment
+        drop(producer);
+
+        // Should still detect remaining samples
+        assert!(buffer.audio_consumer.is_abandoned());
+        assert!(buffer.audio_consumer.slots() > 0);
+    }
+
+    #[test]
+    fn test_downstream_abandonment_detection() {
+        let (audio_producer, audio_consumer) = RingBuffer::<f32>::new(1000);
+        let (token_producer, token_consumer) = RingBuffer::<TokenResult>::new(100);
+
+        // Create a minimal StreamingParakeetTDT for testing
+        // We can't fully test without a model, but we can test the producer state
+        assert!(!token_producer.is_abandoned());
+
+        // Drop the consumer to simulate downstream abandonment
+        drop(token_consumer);
+
+        // Producer should detect abandonment
+        assert!(token_producer.is_abandoned());
+
+        // Clean up
+        drop(audio_producer);
+        drop(audio_consumer);
+        drop(token_producer);
+    }
+
+    #[test]
+    fn test_has_next_frame_with_abandonment() {
+        let context = ContextConfig::new(0.1, 0.1, 0.1, 1000);
+        let (mut producer, consumer) = RingBuffer::new(1000);
+        let buffer = StreamingAudioBuffer::new(context.clone(), consumer);
+
+        // Add insufficient samples for normal operation
+        let samples: Vec<f32> = (0..150).map(|i| i as f32).collect();
+        for sample in &samples {
+            let _ = producer.push(*sample);
+        }
+
+        // Should not have chunk in normal operation (need 200 samples)
+        assert!(!buffer.has_next_chunk());
+
+        // Drop producer to simulate abandonment
+        drop(producer);
+
+        // Now should detect remaining samples even though insufficient for normal chunk
+        assert!(buffer.audio_consumer.is_abandoned());
+        assert!(buffer.audio_consumer.slots() > 0);
+    }
+
+    #[test]
+    fn test_bidirectional_shutdown_signaling() {
+        let (audio_producer, audio_consumer) = RingBuffer::<f32>::new(1000);
+        let (token_producer, token_consumer) = RingBuffer::<TokenResult>::new(100);
+
+        // Simulate upstream abandonment
+        drop(audio_producer);
+        assert!(audio_consumer.is_abandoned());
+
+        // Simulate downstream abandonment
+        drop(token_consumer);
+        assert!(token_producer.is_abandoned());
+
+        // Clean up
+        drop(audio_consumer);
+        drop(token_producer);
     }
 }

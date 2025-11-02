@@ -355,3 +355,193 @@ async fn test_streaming_real_audio_files() {
 
     println!("Birds audio correctly identified as non-speech");
 }
+
+#[tokio::test]
+async fn test_upstream_abandonment_detection() {
+    use frame_processor::FrameProcessor;
+
+    let (mut vad, mut audio_producer, mut speech_consumer) =
+        create_streaming_vad().expect("Failed to create streaming VAD");
+
+    // Push some audio samples
+    let samples = vec![0.1f32; 1600]; // 100ms of audio
+    for sample in samples {
+        let _ = audio_producer.push(sample);
+    }
+
+    // Drop the audio producer to simulate upstream abandonment
+    drop(audio_producer);
+
+    // The VAD should detect abandonment and process remaining frames
+    assert!(
+        vad.is_audio_abandoned(),
+        "Audio consumer should detect producer abandonment"
+    );
+
+    // Process remaining frames - should handle abandonment gracefully
+    while vad.has_next_frame() {
+        vad.process_frame().await.expect("Failed to process frame");
+    }
+
+    // After processing all remaining frames, speech producer should be dropped
+    assert!(
+        vad.is_speech_producer_closed(),
+        "Speech producer should be dropped after upstream abandonment"
+    );
+
+    // Speech consumer should detect abandonment
+    assert!(
+        speech_consumer.is_abandoned(),
+        "Speech consumer should detect producer abandonment"
+    );
+
+    println!("Upstream abandonment detection test passed");
+}
+
+#[tokio::test]
+async fn test_downstream_abandonment_detection() {
+    use frame_processor::FrameProcessor;
+
+    let (mut vad, mut audio_producer, speech_consumer) =
+        create_streaming_vad().expect("Failed to create streaming VAD");
+
+    // Push some audio samples
+    let samples = vec![0.1f32; 1600]; // 100ms of audio
+    for sample in samples {
+        let _ = audio_producer.push(sample);
+    }
+
+    // Drop the speech consumer to simulate downstream abandonment
+    drop(speech_consumer);
+
+    // Verify speech producer detects abandonment before processing
+    assert!(
+        vad.is_speech_abandoned(),
+        "Speech producer should detect consumer abandonment"
+    );
+
+    // Process a frame - should detect downstream abandonment
+    vad.process_frame().await.expect("Failed to process frame");
+
+    // Speech producer should be dropped after detecting downstream abandonment
+    assert!(
+        vad.is_speech_producer_closed(),
+        "Speech producer should be dropped after downstream abandonment"
+    );
+
+    // Process all remaining frames - VAD should stop processing
+    while vad.has_next_frame() {
+        vad.process_frame().await.expect("Failed to process frame");
+    }
+
+    // VAD should be marked as finished after downstream abandonment
+    assert!(
+        vad.is_finished(),
+        "VAD should be finished after downstream abandonment and all frames processed"
+    );
+
+    println!("Downstream abandonment detection test passed");
+}
+
+#[tokio::test]
+async fn test_bidirectional_abandonment_with_process_loop() {
+    use frame_processor::FrameProcessor;
+
+    let (mut vad, mut audio_producer, speech_consumer) =
+        create_streaming_vad().expect("Failed to create streaming VAD");
+
+    // Spawn a task to feed audio and then drop the producer
+    let feed_task = tokio::spawn(async move {
+        // Feed some audio
+        for _ in 0..10 {
+            let samples = vec![0.1f32; 1600]; // 100ms chunks
+            for sample in samples {
+                let _ = audio_producer.push(sample);
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // Producer is dropped here when task ends
+    });
+
+    // Spawn a task to consume speech and then drop the consumer
+    let consume_task = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Consumer is dropped here when task ends
+        drop(speech_consumer);
+    });
+
+    // Process frames - should handle both upstream and downstream abandonment
+    let process_result = tokio::time::timeout(Duration::from_secs(2), async {
+        while !vad.is_finished() {
+            if vad.has_next_frame() {
+                vad.process_frame().await.expect("Failed to process frame");
+            } else {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    })
+    .await;
+
+    assert!(
+        process_result.is_ok(),
+        "Processing should complete within timeout"
+    );
+
+    // Wait for tasks to complete
+    feed_task.await.expect("Feed task failed");
+    consume_task.await.expect("Consume task failed");
+
+    // Speech producer should be dropped
+    assert!(
+        vad.is_speech_producer_closed(),
+        "Speech producer should be dropped after abandonment"
+    );
+
+    println!("Bidirectional abandonment with process_loop test passed");
+}
+
+#[tokio::test]
+async fn test_abandonment_with_remaining_frames() {
+    use frame_processor::FrameProcessor;
+
+    let (mut vad, mut audio_producer, mut speech_consumer) =
+        create_streaming_vad().expect("Failed to create streaming VAD");
+
+    // Push multiple frames worth of audio
+    let samples = vec![0.1f32; 16000]; // 1 second of audio
+    for sample in samples {
+        let _ = audio_producer.push(sample);
+    }
+
+    // Drop the producer immediately
+    drop(audio_producer);
+
+    // Process all remaining frames
+    let mut frames_processed = 0;
+    while vad.has_next_frame() {
+        vad.process_frame().await.expect("Failed to process frame");
+        frames_processed += 1;
+    }
+
+    assert!(
+        frames_processed > 0,
+        "Should have processed remaining frames after abandonment"
+    );
+
+    // Speech producer should be dropped after all frames are processed
+    assert!(
+        vad.is_speech_producer_closed(),
+        "Speech producer should be dropped after processing all remaining frames"
+    );
+
+    // Verify speech consumer detects abandonment
+    assert!(
+        speech_consumer.is_abandoned(),
+        "Speech consumer should detect producer abandonment"
+    );
+
+    println!(
+        "Processed {} frames after upstream abandonment",
+        frames_processed
+    );
+}

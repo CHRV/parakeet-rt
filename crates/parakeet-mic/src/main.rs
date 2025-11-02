@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Host, Sample, SampleFormat, SampleRate, Stream, StreamConfig};
+use frame_processor::FrameProcessor;
 use parakeet::execution::ModelConfig as ExecutionConfig;
 use parakeet::model::ParakeetTDTModel;
 use parakeet::streaming::{ContextConfig, StreamingParakeetTDT, TokenResult};
@@ -11,7 +12,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use tokio::time::sleep;
 
 /// Convert a single token to text with proper spacing
 fn token_to_text(token_text: &str, is_first_token: bool) -> Option<String> {
@@ -86,75 +86,164 @@ struct Args {
     save_audio: Option<String>,
 }
 
-struct AudioCapture {
-    _stream: Stream,
+/// Recording thread that captures audio from microphone
+///
+/// When this thread exits (either via shutdown signal or error), the audio_producer
+/// is automatically dropped. The processing thread detects this abandonment via
+/// `audio_consumer.is_abandoned()` and gracefully processes remaining buffered data
+/// before shutting down. No explicit coordination is needed.
+fn recording_thread(
+    device: Device,
+    config: StreamConfig,
+    audio_producer: rtrb::Producer<f32>,
+    audio_writer: AudioWriter,
+    shutdown: Arc<AtomicBool>,
+) -> Result<()> {
+    let default_config = device.default_input_config()?;
+    let sample_format = default_config.sample_format();
+    let channels = config.channels as usize;
+
+    // Build the audio input stream (moves audio_producer into the closure)
+    let stream = match sample_format {
+        SampleFormat::F32 => {
+            build_audio_stream::<f32>(&device, &config, audio_producer, audio_writer, channels)?
+        }
+        SampleFormat::I16 => {
+            build_audio_stream::<i16>(&device, &config, audio_producer, audio_writer, channels)?
+        }
+        SampleFormat::U16 => {
+            build_audio_stream::<u16>(&device, &config, audio_producer, audio_writer, channels)?
+        }
+        _ => return Err(anyhow!("Unsupported sample format: {:?}", sample_format)),
+    };
+
+    stream.play()?;
+
+    // Keep recording until shutdown signal
+    while !shutdown.load(Ordering::Relaxed) {
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    // Drop stream to stop recording and release the audio_producer
+    drop(stream);
+
+    Ok(())
 }
 
-impl AudioCapture {
-    fn new(
-        device: &Device,
-        config: &StreamConfig,
-        audio_producer: rtrb::Producer<f32>,
-        audio_writer: AudioWriter,
-    ) -> Result<Self> {
-        let default_config = device.default_input_config()?;
-        let sample_format = default_config.sample_format();
-        let channels = config.channels as usize;
+/// Build audio input stream for a specific sample type
+fn build_audio_stream<T>(
+    device: &Device,
+    config: &StreamConfig,
+    mut audio_producer: rtrb::Producer<f32>,
+    audio_writer: AudioWriter,
+    channels: usize,
+) -> Result<Stream>
+where
+    T: cpal::Sample + cpal::SizedSample + Send + 'static,
+    f32: cpal::FromSample<T>,
+{
+    let stream = device.build_input_stream(
+        config,
+        move |data: &[T], _: &cpal::InputCallbackInfo| {
+            // Convert to mono by averaging channels
+            for chunk in data.chunks(channels) {
+                let mono_sample = if channels == 1 {
+                    f32::from_sample(chunk[0])
+                } else {
+                    let sum: f32 = chunk.iter().map(|&s| f32::from_sample(s)).sum();
+                    sum / channels as f32
+                };
 
-        let stream = match sample_format {
-            SampleFormat::F32 => {
-                Self::build_stream::<f32>(device, config, audio_producer, audio_writer, channels)?
+                // Send sample to streaming engine (ignore if buffer is full)
+                let _ = audio_producer.push(mono_sample);
+
+                // Write sample to audio file (ignore errors to avoid blocking)
+                let _ = audio_writer.write_sample(mono_sample);
             }
-            SampleFormat::I16 => {
-                Self::build_stream::<i16>(device, config, audio_producer, audio_writer, channels)?
-            }
-            SampleFormat::U16 => {
-                Self::build_stream::<u16>(device, config, audio_producer, audio_writer, channels)?
-            }
-            _ => return Err(anyhow!("Unsupported sample format: {:?}", sample_format)),
-        };
+        },
+        |err| eprintln!("Audio stream error: {}", err),
+        None,
+    )?;
 
-        stream.play()?;
+    Ok(stream)
+}
 
-        Ok(AudioCapture { _stream: stream })
-    }
+/// Processing thread that uses FrameProcessor trait
+///
+/// This thread leverages automatic abandonment detection via `process_loop()`:
+/// - When the recording thread exits (audio producer dropped), the processor
+///   automatically detects abandonment via `audio_consumer.is_abandoned()`
+/// - When the output thread exits (token consumer dropped), the processor
+///   automatically detects abandonment via `token_producer.is_abandoned()`
+/// - `process_loop()` handles all frame processing and exits automatically when
+///   abandonment is detected or the stream is finished
+/// - No explicit `mark_finished()` calls or shutdown coordination needed
+async fn processing_thread(mut processor: StreamingParakeetTDT) -> Result<()> {
+    // process_loop() runs until abandonment is detected or stream finishes
+    // It handles all buffered data and calls finalize() automatically
+    processor.process_loop().await.map_err(|e| anyhow!("{}", e))?;
 
-    fn build_stream<T>(
-        device: &Device,
-        config: &StreamConfig,
-        mut audio_producer: rtrb::Producer<f32>,
-        audio_writer: AudioWriter,
-        channels: usize,
-    ) -> Result<Stream>
-    where
-        T: cpal::Sample + cpal::SizedSample + Send + 'static,
-        f32: cpal::FromSample<T>,
-    {
-        let stream = device.build_input_stream(
-            config,
-            move |data: &[T], _: &cpal::InputCallbackInfo| {
-                // Convert to mono by averaging channels
-                for chunk in data.chunks(channels) {
-                    let mono_sample = if channels == 1 {
-                        f32::from_sample(chunk[0])
-                    } else {
-                        let sum: f32 = chunk.iter().map(|&s| f32::from_sample(s)).sum();
-                        sum / channels as f32
-                    };
+    Ok(())
+}
 
-                    // Send sample to streaming engine (ignore if buffer is full)
-                    let _ = audio_producer.push(mono_sample);
+/// Output thread that consumes tokens from ring buffer
+///
+/// When this thread exits (either via shutdown signal or error), the token_consumer
+/// is automatically dropped. The processing thread detects this abandonment via
+/// `token_producer.is_abandoned()` and stops producing tokens, then shuts down
+/// gracefully. This creates bidirectional shutdown signaling through the pipeline.
+fn output_thread(
+    mut token_consumer: rtrb::Consumer<TokenResult>,
+    output_writer: OutputWriter,
+    shutdown: Arc<AtomicBool>,
+) -> Result<OutputWriter> {
+    let mut text_buffer = String::new();
 
-                    // Write sample to audio file (ignore errors to avoid blocking)
-                    let _ = audio_writer.write_sample(mono_sample);
+    // Continue until shutdown AND no more tokens available
+    while !shutdown.load(Ordering::Relaxed) || token_consumer.slots() > 0 {
+        // Read tokens from the consumer
+        let mut new_tokens = Vec::new();
+        while let Ok(token_result) = token_consumer.pop() {
+            if let Some(ref token_text) = token_result.text {
+                // Convert token to text with proper spacing
+                if let Some(text_part) = token_to_text(token_text, text_buffer.is_empty()) {
+                    // Add to buffer for sentence detection
+                    text_buffer.push_str(&text_part);
+
+                    // Stream output immediately
+                    print!("{}", text_part);
+                    use std::io::{self, Write};
+                    io::stdout().flush().unwrap();
+
+                    // Check for sentence endings and add newlines
+                    if text_part.contains('.') || text_part.contains('?') || text_part.contains('!')
+                    {
+                        println!();
+                        io::stdout().flush().unwrap();
+                        text_buffer.clear();
+                    }
                 }
-            },
-            |err| eprintln!("Audio stream error: {}", err),
-            None,
-        )?;
+            }
+            new_tokens.push(token_result);
+        }
 
-        Ok(stream)
+        // Write tokens to output file
+        if !new_tokens.is_empty() {
+            if let Err(e) = output_writer.write_tokens(&new_tokens) {
+                eprintln!("Error writing to output file: {}", e);
+            }
+        }
+
+        // Short sleep to avoid busy waiting
+        thread::sleep(Duration::from_millis(50));
     }
+
+    // Print any remaining text in buffer when stopping
+    if !text_buffer.trim().is_empty() {
+        println!("{}", text_buffer.trim());
+    }
+
+    Ok(output_writer)
 }
 
 fn list_audio_devices() -> Result<()> {
@@ -223,92 +312,22 @@ fn setup_audio_config(device: &Device, target_sample_rate: u32) -> Result<Stream
     Ok(config)
 }
 
-async fn audio_processor_worker(
-    mut streaming_engine: StreamingParakeetTDT,
-    running: Arc<AtomicBool>,
-) {
-    while running.load(Ordering::Relaxed) {
-        // Process audio through the streaming engine
-        if let Err(e) = streaming_engine.process_audio().await {
-            eprintln!("Error processing audio: {}", e);
-            continue;
-        }
-
-        sleep(Duration::from_millis(10)).await;
-    }
-}
-
-async fn transcription_worker(
-    mut streaming_engine: StreamingParakeetTDT,
-    mut token_consumer: rtrb::Consumer<TokenResult>,
-    output_writer: OutputWriter,
-    running: Arc<AtomicBool>,
-) -> OutputWriter {
-    let mut text_buffer = String::new();
-
-    while running.load(Ordering::Relaxed) {
-        // Process audio through the streaming engine
-        if let Err(e) = streaming_engine.process_audio().await {
-            eprintln!("Error processing audio: {}", e);
-            continue;
-        }
-
-        // Read any new tokens from the consumer
-        let mut new_tokens = Vec::new();
-        while let Ok(token_result) = token_consumer.pop() {
-            if let Some(ref token_text) = token_result.text {
-                // Convert token to text with proper spacing
-                if let Some(text_part) = token_to_text(token_text, text_buffer.is_empty()) {
-                    // Add to buffer for sentence detection
-                    text_buffer.push_str(&text_part);
-
-                    // Stream output immediately
-                    print!("{}", text_part);
-                    use std::io::{self, Write};
-                    io::stdout().flush().unwrap(); // Force immediate output
-
-                    // Check for sentence endings and add newlines
-                    if text_part.contains('.') || text_part.contains('?') || text_part.contains('!')
-                    {
-                        println!(); // New line after sentence
-                        io::stdout().flush().unwrap();
-                        text_buffer.clear(); // Clear buffer after complete sentence
-                    }
-                }
-            }
-            new_tokens.push(token_result);
-        }
-
-        // Process tokens if any were detected
-        if !new_tokens.is_empty() {
-            // Collect tokens for text reconstruction
-            let mut text_parts = Vec::new();
-            for token_result in &new_tokens {
-                if let Some(ref text) = token_result.text {
-                    text_parts.push(text.clone());
-                }
-            }
-
-            // Write tokens to output file
-            if let Err(e) = output_writer.write_tokens(&new_tokens) {
-                eprintln!("Error writing to output file: {}", e);
-            }
-        }
-
-        // Small sleep to prevent busy waiting
-        thread::sleep(Duration::from_millis(10));
-    }
-
-    // Print any remaining text in buffer when stopping
-    if !text_buffer.trim().is_empty() {
-        println!("{}", text_buffer.trim());
-    }
-
-    output_writer
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
+    // This application uses a three-thread architecture with automatic abandonment detection:
+    //
+    // Recording Thread → [audio_producer] → Processing Thread → [token_producer] → Output Thread
+    //
+    // Shutdown behavior:
+    // - Ctrl+C sets shutdown flag, causing all threads to exit their main loops
+    // - When recording thread exits, audio_producer is dropped
+    // - Processing thread detects abandonment and processes remaining buffered audio
+    // - When processing completes, token_producer is dropped
+    // - Output thread detects abandonment and drains remaining tokens
+    // - All threads coordinate shutdown automatically via ring buffer abandonment detection
+    //
+    // This eliminates the need for explicit mark_finished() calls and simplifies coordination.
+
     let args = Args::parse();
 
     if args.list_devices {
@@ -398,34 +417,64 @@ async fn main() -> Result<()> {
 
     let config = setup_audio_config(&device, args.sample_rate)?;
 
-    // Start audio capture - directly connected to streaming engine
-    let audio_capture = AudioCapture::new(&device, &config, audio_producer, audio_writer.clone())?;
-    println!("✓ Audio capture started");
-
     // Setup shutdown signal
-    let running = Arc::new(AtomicBool::new(true));
-    let running_clone = running.clone();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_clone = shutdown.clone();
 
     ctrlc::set_handler(move || {
         println!("\nShutdown signal received...");
-        running_clone.store(false, Ordering::Relaxed);
+        shutdown_clone.store(true, Ordering::Relaxed);
     })?;
 
+    println!("✓ Audio capture ready");
     println!("\n🎤 Listening for speech... (Press Ctrl+C to stop)");
     println!("Speak into your microphone to see real-time transcription");
 
-    // Start transcription worker thread
-    let transcription_handle = thread::spawn(move || {
-        transcription_worker(streaming_engine, token_consumer, output_writer, running)
+    // Spawn recording thread
+    let recording_handle = {
+        let shutdown = shutdown.clone();
+        let audio_writer_clone = audio_writer.clone();
+        thread::spawn(move || {
+            recording_thread(device, config, audio_producer, audio_writer_clone, shutdown)
+        })
+    };
+
+    // Spawn processing thread
+    let processing_handle = tokio::spawn(async move {
+        processing_thread(streaming_engine).await
     });
 
-    // Wait for shutdown
-    let output_writer = transcription_handle.join().unwrap().await;
+    // Spawn output thread
+    let output_handle = {
+        let shutdown = shutdown.clone();
+        thread::spawn(move || {
+            output_thread(token_consumer, output_writer, shutdown)
+        })
+    };
 
-    // Drop audio capture to release the AudioWriter reference
-    drop(audio_capture);
+    // Wait for all threads to complete and collect errors
+    let recording_result = recording_handle.join().unwrap();
+    let processing_result = processing_handle.await.unwrap();
+    let output_result = output_handle.join().unwrap();
 
-    // Now finalize the files after all references are dropped
+    // Report any errors
+    if let Err(e) = recording_result {
+        eprintln!("Recording thread error: {}", e);
+    }
+    if let Err(e) = processing_result {
+        eprintln!("Processing thread error: {}", e);
+    }
+
+    // Finalize output writer
+    let output_writer = match output_result {
+        Ok(writer) => writer,
+        Err(e) => {
+            eprintln!("Output thread error: {}", e);
+            return Err(e);
+        }
+    };
+
+    // Finalize the files
     if let Err(e) = output_writer.finalize() {
         eprintln!("Error finalizing output file: {}", e);
     }

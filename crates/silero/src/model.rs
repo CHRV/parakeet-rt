@@ -63,7 +63,7 @@ impl Silero {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use vad::{silero::Silero, utils::SampleRate};
+    /// use silero::{model::Silero, utils::SampleRate};
     ///
     /// let vad = Silero::new(SampleRate::SixteenkHz, "models/silero_vad.onnx")?;
     /// # Ok::<(), ort::Error>(())
@@ -114,7 +114,7 @@ impl Silero {
     /// # Example
     ///
     /// ```rust,no_run
-    /// # use vad::{silero::Silero, utils::SampleRate};
+    /// # use silero::{model::Silero, utils::SampleRate};
     /// # let mut vad = Silero::new(SampleRate::SixteenkHz, "models/silero_vad.onnx")?;
     /// // Reset state when starting a new audio stream
     /// vad.reset();
@@ -152,7 +152,7 @@ impl Silero {
     /// # Example
     ///
     /// ```rust,no_run
-    /// # use vad::{silero::Silero, utils::SampleRate};
+    /// # use silero::{model::Silero, utils::SampleRate};
     /// # let mut vad = Silero::new(SampleRate::SixteenkHz, "models/silero_vad.onnx")?;
     /// let audio_samples = vec![0f32; 1024]; // Can handle various sizes
     /// let confidence = vad.calc_level(&audio_samples)?;

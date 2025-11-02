@@ -37,7 +37,7 @@ pub struct StreamingVad {
     params: Params,
     state: State,
     audio_consumer: Consumer<f32>,
-    speech_producer: Producer<f32>,
+    speech_producer: Option<Producer<f32>>,
     rx_buffer_size: usize,
     tx_buffer_size: usize,
     is_finished_flag: bool,
@@ -225,7 +225,7 @@ impl StreamingVad {
             params,
             state: State::new(),
             audio_consumer,
-            speech_producer,
+            speech_producer: Some(speech_producer),
             rx_buffer_size,
             tx_buffer_size,
             is_finished_flag: false,
@@ -262,14 +262,16 @@ impl StreamingVad {
 
             // Only send frame to speech producer if we're in triggered state
             if self.state.triggered {
-                // Use the efficient chunk writing method if available
-                if let Ok(chunk) = self.speech_producer.write_chunk_uninit(frame_data.len()) {
-                    chunk.fill_from_iter(frame_data.iter().copied());
-                } else {
-                    // Fallback to individual pushes if chunk writing fails
-                    for &sample in &frame_data {
-                        if self.speech_producer.push(sample).is_err() {
-                            break; // Buffer full, skip remaining samples
+                if let Some(producer) = &mut self.speech_producer {
+                    // Use the efficient chunk writing method if available
+                    if let Ok(chunk) = producer.write_chunk_uninit(frame_data.len()) {
+                        chunk.fill_from_iter(frame_data.iter().copied());
+                    } else {
+                        // Fallback to individual pushes if chunk writing fails
+                        for &sample in &frame_data {
+                            if producer.push(sample).is_err() {
+                                break; // Buffer full, skip remaining samples
+                            }
                         }
                     }
                 }
@@ -308,6 +310,29 @@ impl StreamingVad {
     pub fn is_triggered(&self) -> bool {
         self.state.triggered
     }
+
+    /// Drop the speech producer to signal end of output to downstream
+    pub fn close_output(&mut self) {
+        self.speech_producer = None;
+    }
+
+    /// Check if the audio consumer has been abandoned (audio producer dropped)
+    pub fn is_audio_abandoned(&self) -> bool {
+        self.audio_consumer.is_abandoned()
+    }
+
+    /// Check if the speech producer has been dropped
+    pub fn is_speech_producer_closed(&self) -> bool {
+        self.speech_producer.is_none()
+    }
+
+    /// Check if the speech consumer has been abandoned (speech consumer dropped)
+    pub fn is_speech_abandoned(&self) -> bool {
+        self.speech_producer
+            .as_ref()
+            .map(|p| p.is_abandoned())
+            .unwrap_or(true)
+    }
 }
 
 #[async_trait]
@@ -315,14 +340,39 @@ impl FrameProcessor for StreamingVad {
     type Error = ort::Error;
 
     fn has_next_frame(&self) -> bool {
+        // Check if audio producer was abandoned (upstream disconnection)
+        if self.audio_consumer.is_abandoned() {
+            // Process remaining buffered frames
+            return self.audio_consumer.slots() >= self.params.frame_size_samples;
+        }
+
+        // Normal operation: check for sufficient samples
         self.audio_consumer.slots() >= self.params.frame_size_samples
     }
 
     async fn process_frame(&mut self) -> Result<(), Self::Error> {
+        // Scenario 1: Check if speech consumer is abandoned (downstream disconnection)
+        if let Some(producer) = &self.speech_producer {
+            if producer.is_abandoned() {
+                // Drop our speech producer to signal downstream
+                self.speech_producer = None;
+                self.mark_finished();
+                return Ok(());
+            }
+        }
+
         // Delegate to the synchronous implementation
         // The Silero model operations are CPU-bound, not I/O-bound,
         // so there's no benefit to making them truly async
-        self.process_frame_sync()
+        self.process_frame_sync()?;
+
+        // Scenario 2: After processing, check if input is abandoned and no more frames (upstream exhaustion)
+        if self.audio_consumer.is_abandoned() && !self.has_next_frame() {
+            // All input processed, drop output producer to signal downstream
+            self.speech_producer = None;
+        }
+
+        Ok(())
     }
 
     fn is_finished(&self) -> bool {

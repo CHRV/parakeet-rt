@@ -134,7 +134,32 @@ This format ensures high quality audio capture suitable for:
 
 ## Architecture
 
-The application consists of:
+The application uses a three-thread architecture with automatic shutdown coordination:
+
+```
+Recording Thread → [audio ring buffer] → Processing Thread → [token ring buffer] → Output Thread
+```
+
+### Components
+
+1. **Recording Thread**: Captures real-time audio from microphone using CPAL
+2. **Processing Thread**: Processes audio chunks using the FrameProcessor trait
+3. **Output Thread**: Consumes tokens and writes transcription results
+4. **Ring Buffers**: Lock-free communication between threads
+
+### Automatic Shutdown Coordination
+
+The application leverages ring buffer abandonment detection for graceful shutdown:
+
+- **When Ctrl+C is pressed**: All threads receive shutdown signal and exit their main loops
+- **Recording thread exits**: Audio producer is dropped, processing thread detects abandonment
+- **Processing thread detects upstream abandonment**: Processes remaining buffered audio, then drops token producer
+- **Output thread detects downstream abandonment**: Drains remaining tokens and exits
+- **No explicit coordination needed**: Ring buffer abandonment detection handles cleanup automatically
+
+This design eliminates the need for complex shutdown signaling and ensures all buffered data is processed before exit.
+
+### Features
 
 1. **Audio Capture**: Uses CPAL to capture real-time audio from microphone
 2. **Streaming Engine**: Processes audio chunks with configurable context

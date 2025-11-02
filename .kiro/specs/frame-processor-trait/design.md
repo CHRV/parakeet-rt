@@ -435,6 +435,207 @@ drop(processor);
 } // processor dropped here
 ```
 
+## Parakeet-Mic Multi-Threaded Architecture
+
+### Overview
+
+The parakeet-mic application will be refactored to use a multi-threaded architecture that leverages the FrameProcessor trait. This design separates concerns into three dedicated threads:
+
+1. **Recording Thread**: Captures audio from the microphone
+2. **Processing Thread**: Runs the FrameProcessor to transcribe audio
+3. **Output Thread**: Prints transcription results to the console
+
+### Thread Architecture
+
+```mermaid
+graph LR
+    A[Microphone] -->|Audio Samples| B[Recording Thread]
+    B -->|Ring Buffer 1| C[Processing Thread]
+    C -->|Ring Buffer 2| D[Output Thread]
+    D -->|Print| E[Console]
+
+    F[Ctrl+C Signal] -.->|Shutdown| B
+    F -.->|Shutdown| C
+    F -.->|Shutdown| D
+```
+
+### Component Design
+
+#### Recording Thread
+
+```rust
+fn recording_thread(
+    audio_producer: rtrb::Producer<f32>,
+    shutdown: Arc<AtomicBool>,
+) -> Result<()> {
+    // Initialize CPAL audio input stream
+    let host = cpal::default_host();
+    let device = host.default_input_device()?;
+    let config = device.default_input_config()?;
+
+    // Create audio stream that pushes samples to ring buffer
+    let stream = device.build_input_stream(
+        &config.into(),
+        move |data: &[f32], _: &_| {
+            for &sample in data {
+                let _ = audio_producer.push(sample);
+            }
+        },
+        |err| eprintln!("Audio error: {}", err),
+        None,
+    )?;
+
+    stream.play()?;
+
+    // Keep recording until shutdown signal
+    while !shutdown.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    Ok(())
+}
+```
+
+#### Processing Thread
+
+```rust
+async fn processing_thread<P: FrameProcessor>(
+    mut processor: P,
+    shutdown: Arc<AtomicBool>,
+) -> Result<(), P::Error> {
+    // Process frames until shutdown signal
+    while !shutdown.load(Ordering::Relaxed) {
+        if processor.has_next_frame() {
+            processor.process_frame().await?;
+        } else {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    // Finalize processing
+    processor.mark_finished();
+    processor.process_loop().await?;
+
+    Ok(())
+}
+```
+
+#### Output Thread
+
+```rust
+fn output_thread(
+    token_consumer: rtrb::Consumer<Token>,
+    vocab: Arc<Vocab>,
+    shutdown: Arc<AtomicBool>,
+) -> Result<()> {
+    let mut current_text = String::new();
+
+    while !shutdown.load(Ordering::Relaxed) || !token_consumer.is_empty() {
+        if let Ok(token) = token_consumer.pop() {
+            let text = vocab.decode(&[token.id]);
+            current_text.push_str(&text);
+
+            // Print on word boundaries or punctuation
+            if text.ends_with(' ') || text.ends_with('\n') {
+                print!("{}", current_text);
+                std::io::stdout().flush()?;
+                current_text.clear();
+            }
+        } else {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    // Print any remaining text
+    if !current_text.is_empty() {
+        println!("{}", current_text);
+    }
+
+    Ok(())
+}
+```
+
+### Main Application Flow
+
+```rust
+#[tokio::main]
+async fn main() -> Result<()> {
+    // Load model and create processor
+    let model = ParakeetTDTModel::load("models/")?;
+    let vocab = Arc::new(Vocab::load("models/vocab.txt")?);
+
+    // Create ring buffers
+    let (audio_producer, audio_consumer) = rtrb::RingBuffer::new(AUDIO_BUFFER_SIZE);
+    let (token_producer, token_consumer) = rtrb::RingBuffer::new(TOKEN_BUFFER_SIZE);
+
+    // Create processor
+    let processor = StreamingParakeetTDT::new(
+        model,
+        audio_consumer,
+        token_producer,
+        SAMPLE_RATE,
+    );
+
+    // Setup shutdown signal
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_clone = shutdown.clone();
+
+    ctrlc::set_handler(move || {
+        shutdown_clone.store(true, Ordering::Relaxed);
+    })?;
+
+    // Spawn threads
+    let recording_handle = std::thread::spawn({
+        let shutdown = shutdown.clone();
+        move || recording_thread(audio_producer, shutdown)
+    });
+
+    let processing_handle = tokio::spawn({
+        let shutdown = shutdown.clone();
+        async move { processing_thread(processor, shutdown).await }
+    });
+
+    let output_handle = std::thread::spawn({
+        let shutdown = shutdown.clone();
+        let vocab = vocab.clone();
+        move || output_thread(token_consumer, vocab, shutdown)
+    });
+
+    // Wait for all threads to complete
+    recording_handle.join().unwrap()?;
+    processing_handle.await??;
+    output_handle.join().unwrap()?;
+
+    Ok(())
+}
+```
+
+### Thread Synchronization
+
+**Shutdown Coordination:**
+- Use `Arc<AtomicBool>` for shutdown signaling
+- Ctrl+C handler sets the flag
+- All threads check the flag periodically
+- Processing thread finalizes before exiting
+- Output thread drains remaining tokens
+
+**Ring Buffer Sizing:**
+- Audio buffer: 1-2 seconds of audio (e.g., 48000 samples for 1s at 48kHz)
+- Token buffer: 1000-2000 tokens (sufficient for several seconds of speech)
+
+**Error Handling:**
+- Each thread returns a Result
+- Main thread collects and reports errors from all threads
+- Shutdown signal triggers graceful cleanup even on errors
+
+### Benefits of Multi-Threaded Design
+
+1. **Concurrency**: Audio recording, processing, and output happen simultaneously
+2. **Responsiveness**: No blocking between stages
+3. **Separation of Concerns**: Each thread has a single responsibility
+4. **Testability**: Each component can be tested independently
+5. **Performance**: Utilizes multiple CPU cores effectively
+
 ## Migration Path
 
 ### Phase 1: Create frame-processor Crate
@@ -453,7 +654,13 @@ drop(processor);
 2. Add `Drop` implementation
 3. Update tests to verify trait behavior
 
-### Phase 4: Update Examples
+### Phase 4: Refactor parakeet-mic
+1. Implement multi-threaded architecture
+2. Create recording, processing, and output threads
+3. Add shutdown coordination with Ctrl+C handling
+4. Update main.rs to orchestrate all threads
+
+### Phase 5: Update Examples
 1. Demonstrate trait usage in examples
 2. Show generic processing functions
 3. Document the new pattern
@@ -491,16 +698,252 @@ Using `async-trait` adds a small heap allocation for the returned Future, but th
 ### Ring Buffer Efficiency
 No changes to the underlying ring buffer implementation, so performance characteristics remain the same.
 
+## Ring Buffer Abandonment Detection
+
+### Overview
+
+The rtrb ring buffer library provides `is_abandoned()` methods on both producers and consumers that return `true` when the corresponding endpoint has been dropped. This feature enables automatic detection of disconnections without requiring explicit signaling.
+
+### Design
+
+#### Input Stream Abandonment
+
+When the audio producer is dropped (e.g., recording thread exits), the consumer can detect this:
+
+```rust
+// In has_next_frame implementation
+fn has_next_frame(&self) -> bool {
+    // Check if producer was abandoned
+    if self.audio_consumer.is_abandoned() {
+        // No more data will arrive, mark as finished
+        return self.audio_consumer.slots() > 0;
+    }
+
+    // Normal operation: check for sufficient samples
+    self.audio_consumer.slots() >= self.params.frame_size_samples
+}
+```
+
+#### Output Stream Abandonment
+
+When the output consumer is dropped (e.g., output thread exits), the producer can detect this:
+
+```rust
+// In process_frame implementation
+async fn process_frame(&mut self) -> Result<(), Self::Error> {
+    // Check if consumer was abandoned before processing
+    if self.token_producer.is_abandoned() {
+        // No point processing if nobody is listening
+        self.mark_finished();
+        return Ok(());
+    }
+
+    // Normal processing...
+    self.process_next_chunk().await?;
+    Ok(())
+}
+```
+
+### Optional Output Producers for Bidirectional Shutdown
+
+Output producers should be stored as `Option<T>` to enable bidirectional shutdown signaling. The processor drops its output producer in two scenarios:
+
+1. **Downstream abandonment**: When the output consumer is abandoned (output thread exits)
+2. **Upstream abandonment**: When the input producer is abandoned (input thread exits) and processing completes
+
+```
+Recording Thread → [audio_producer] → Processor → [token_producer: Option] → Output Thread
+                                          ↓
+                    Scenario 1: Output consumer abandoned → drop token_producer
+                    Scenario 2: Audio producer abandoned → process remaining → drop token_producer
+```
+
+### Implementation Strategy
+
+#### StreamingParakeetTDT Changes
+
+The struct stores the token producer as `Option<Producer<TokenResult>>`:
+
+```rust
+pub struct StreamingParakeetTDT {
+    // ... existing fields ...
+
+    // Optional token producer for bidirectional shutdown signaling
+    token_producer: Option<Producer<TokenResult>>,
+}
+
+impl StreamingParakeetTDT {
+    /// Drop the token producer to signal end of output to downstream
+    pub fn close_output(&mut self) {
+        self.token_producer = None;
+    }
+}
+
+#[async_trait]
+impl FrameProcessor for StreamingParakeetTDT {
+    fn has_next_frame(&self) -> bool {
+        // Check for abandonment first
+        if self.buffer.audio_consumer.is_abandoned() {
+            // Process remaining buffered data
+            return self.buffer.audio_consumer.slots() > 0;
+        }
+
+        self.buffer.has_next_chunk()
+    }
+
+    async fn process_frame(&mut self) -> Result<(), Self::Error> {
+        // Scenario 1: Check if output consumer is abandoned
+        if let Some(producer) = &self.token_producer {
+            if producer.is_abandoned() {
+                // Drop our token producer to signal downstream
+                self.token_producer = None;
+                self.mark_finished();
+                return Ok(());
+            }
+        }
+
+        self.process_next_chunk().await?;
+
+        // Scenario 2: After processing, check if input is abandoned and no more frames
+        if self.buffer.audio_consumer.is_abandoned() && !self.has_next_frame() {
+            // All input processed, drop output producer
+            self.token_producer = None;
+        }
+
+        Ok(())
+    }
+}
+```
+
+**Key behaviors**:
+1. **Downstream shutdown**: When output thread exits → `token_producer.is_abandoned()` → drop `token_producer`
+2. **Upstream shutdown**: When recording thread exits → `audio_consumer.is_abandoned()` → process remaining data → drop `token_producer` → output thread detects and exits
+
+#### StreamingVad Changes
+
+Similarly for StreamingVad:
+
+```rust
+pub struct StreamingVad {
+    // ... existing fields ...
+
+    // Optional speech producer for bidirectional shutdown signaling
+    speech_producer: Option<Producer<f32>>,
+}
+
+impl StreamingVad {
+    /// Drop the speech producer to signal end of output to downstream
+    pub fn close_output(&mut self) {
+        self.speech_producer = None;
+    }
+}
+
+#[async_trait]
+impl FrameProcessor for StreamingVad {
+    fn has_next_frame(&self) -> bool {
+        // Check for abandonment first
+        if self.audio_consumer.is_abandoned() {
+            // Process remaining buffered data
+            return self.audio_consumer.slots() >= self.params.frame_size_samples;
+        }
+
+        self.audio_consumer.slots() >= self.params.frame_size_samples
+    }
+
+    async fn process_frame(&mut self) -> Result<(), Self::Error> {
+        // Scenario 1: Check if output consumer is abandoned
+        if let Some(producer) = &self.speech_producer {
+            if producer.is_abandoned() {
+                // Drop our speech producer to signal downstream
+                self.speech_producer = None;
+                self.mark_finished();
+                return Ok(());
+            }
+        }
+
+        self.process_frame_sync()?;
+
+        // Scenario 2: After processing, check if input is abandoned and no more frames
+        if self.audio_consumer.is_abandoned() && !self.has_next_frame() {
+            // All input processed, drop output producer
+            self.speech_producer = None;
+        }
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl FrameProcessor for StreamingVad {
+    fn has_next_frame(&self) -> bool {
+        // Check for abandonment first
+        if self.audio_consumer.is_abandoned() {
+            // Process remaining buffered data
+            return self.audio_consumer.slots() >= self.params.frame_size_samples;
+        }
+
+        self.audio_consumer.slots() >= self.params.frame_size_samples
+    }
+
+    async fn process_frame(&mut self) -> Result<(), Self::Error> {
+        // Early exit if output is abandoned
+        if self.speech_producer.is_abandoned() {
+            self.mark_finished();
+            return Ok(());
+        }
+
+        self.process_frame_sync()
+    }
+}
+```
+
+### Benefits
+
+1. **Automatic Cleanup**: No need for explicit `mark_finished()` calls when threads exit normally
+2. **Graceful Degradation**: System handles unexpected disconnections gracefully
+3. **Simplified Code**: Reduces boilerplate in thread coordination
+4. **Robust Shutdown**: Works even if shutdown signals are missed
+
+### Usage Example
+
+```rust
+// Before: Manual coordination required
+let shutdown = Arc::new(AtomicBool::new(false));
+ctrlc::set_handler(move || {
+    shutdown.store(true, Ordering::Relaxed);
+})?;
+
+// Recording thread checks shutdown flag
+while !shutdown.load(Ordering::Relaxed) {
+    // record audio...
+}
+processor.mark_finished(); // Explicit call needed
+
+// After: Automatic detection
+ctrlc::set_handler(move || {
+    std::process::exit(0); // Just exit
+})?;
+
+// Recording thread exits on Ctrl+C
+// Producer is dropped automatically
+// Processor detects abandonment via is_abandoned()
+// No explicit mark_finished() needed!
+```
+
+### Edge Cases
+
+1. **Partial Data**: When producer is abandoned mid-stream, process all remaining buffered data before finishing
+2. **Both Ends Abandoned**: If both producer and consumer are abandoned, exit immediately
+3. **Race Conditions**: Check abandonment at the start of each processing iteration to catch drops quickly
+
 ## Future Enhancements
 
-1. **Producer Dropping**: Make the audio producer an `Option` so it can be dropped to signal stream completion. When dropped, `consumer.is_abandoned()` will return true, allowing automatic detection of stream end without explicit `mark_finished()` calls.
+1. **Generic Frame Types**: Support different frame representations (f32, i16, etc.)
 
-2. **Generic Frame Types**: Support different frame representations (f32, i16, etc.)
+2. **Batch Processing**: Extend trait to support batch frame processing
 
-3. **Batch Processing**: Extend trait to support batch frame processing
+3. **Metrics**: Add trait methods for performance monitoring
 
-4. **Metrics**: Add trait methods for performance monitoring
+4. **Cancellation**: Support for graceful cancellation of processing loops
 
-5. **Cancellation**: Support for graceful cancellation of processing loops
-
-6. **Backpressure**: Better handling of slow consumers
+5. **Backpressure**: Better handling of slow consumers

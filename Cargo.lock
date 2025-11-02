@@ -1569,6 +1569,7 @@ dependencies = [
  "clap",
  "cpal 0.15.3",
  "ctrlc",
+ "frame-processor",
  "hound",
  "parakeet",
  "rtrb",

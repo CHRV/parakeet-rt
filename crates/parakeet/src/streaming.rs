@@ -252,11 +252,11 @@ impl StreamingParakeetTDT {
     }
 
     /// Mark the audio stream as finished
-    pub fn finalize(&mut self) {
+    pub async fn finalize(&mut self) {
         self.buffer.finish();
 
         // Process any remaining audio
-        let _ = self.process_audio();
+        let _ = self.process_audio().await;
     }
 
     /// Process a single chunk and return new tokens with timestamps

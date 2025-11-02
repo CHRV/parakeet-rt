@@ -342,7 +342,7 @@ async fn main() -> Result<()> {
     println!("=== Parakeet Real-time Microphone Transcription ===");
 
     // Parse output format
-    let output_format = OutputFormat::from_str(&args.format)?;
+    let output_format:OutputFormat = args.format.parse()?;
 
     // Setup output writer
     let output_writer = OutputWriter::new(args.output.clone(), output_format, args.append)?;

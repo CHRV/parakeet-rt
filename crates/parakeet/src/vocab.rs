@@ -75,12 +75,12 @@ impl Vocabulary {
         for &token_id in token_ids {
             if let Some(token_text) = self.decode_token(token_id) {
                 // Handle special tokens and formatting
-                if token_text.starts_with("▁") {
+                if let Some(text) = token_text.strip_prefix("▁") {
                     // SentencePiece space prefix - replace with actual space
                     if !result.is_empty() {
                         result.push(' ');
                     }
-                    result.push_str(&token_text[3..]); // Skip the ▁ character (3 bytes in UTF-8)
+                    result.push_str(text); // Skip the ▁ character (3 bytes in UTF-8)
                 } else if token_text.starts_with('<') && token_text.ends_with('>') {
                     // Special tokens like <|endoftext|> - skip them for clean output
                     continue;

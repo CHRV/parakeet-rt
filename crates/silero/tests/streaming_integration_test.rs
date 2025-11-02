@@ -298,8 +298,6 @@ async fn test_streaming_multiple_speech_segments() {
         println!("  Total speech duration: {:.2} seconds", duration_seconds);
     }
 
-    // The test passes if no errors occurred during processing
-    assert!(true, "Multiple speech segments test completed successfully");
 }
 
 #[tokio::test]
@@ -360,7 +358,7 @@ async fn test_streaming_real_audio_files() {
 async fn test_upstream_abandonment_detection() {
     use frame_processor::FrameProcessor;
 
-    let (mut vad, mut audio_producer, mut speech_consumer) =
+    let (mut vad, mut audio_producer, speech_consumer) =
         create_streaming_vad().expect("Failed to create streaming VAD");
 
     // Push some audio samples
@@ -504,7 +502,7 @@ async fn test_bidirectional_abandonment_with_process_loop() {
 async fn test_abandonment_with_remaining_frames() {
     use frame_processor::FrameProcessor;
 
-    let (mut vad, mut audio_producer, mut speech_consumer) =
+    let (mut vad, mut audio_producer, speech_consumer) =
         create_streaming_vad().expect("Failed to create streaming VAD");
 
     // Push multiple frames worth of audio

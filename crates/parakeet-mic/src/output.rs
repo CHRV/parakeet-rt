@@ -14,8 +14,9 @@ pub enum OutputFormat {
     Csv,
 }
 
-impl OutputFormat {
-    pub fn from_str(s: &str) -> Result<Self> {
+impl std::str::FromStr for OutputFormat {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
         match s.to_lowercase().as_str() {
             "txt" => Ok(OutputFormat::Txt),
             "json" => Ok(OutputFormat::Json),
@@ -163,15 +164,6 @@ impl AudioWriter {
         Ok(())
     }
 
-    pub fn write_samples(&self, samples: &[f32]) -> Result<()> {
-        if let Some(writer) = &self.writer {
-            let mut writer = writer.lock().unwrap();
-            for &sample in samples {
-                writer.write_sample(sample)?;
-            }
-        }
-        Ok(())
-    }
 
     pub fn finalize(self) -> Result<()> {
         if let Some(writer) = self.writer {

@@ -6,7 +6,6 @@ use parakeet::execution::ModelConfig as ExecutionConfig;
 use parakeet::model::ParakeetTDTModel;
 use parakeet::streaming::{ContextConfig, StreamingParakeetTDT, TokenResult};
 use parakeet::vocab::Vocabulary;
-use rtrb;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -21,9 +20,9 @@ fn token_to_text(token_text: &str, is_first_token: bool) -> Option<String> {
         return None;
     }
 
-    if token_text.starts_with("▁") {
+    if let Some(text_part) = token_text.strip_prefix("▁") {
         // SentencePiece space prefix - replace with actual space
-        let text_part = &token_text[3..]; // Skip the ▁ character (3 bytes in UTF-8)
+        // Skip the ▁ character (3 bytes in UTF-8)
         if is_first_token {
             Some(text_part.to_string())
         } else {

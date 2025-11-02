@@ -221,7 +221,7 @@ impl StreamingParakeetTDT {
         // Create ring buffers for audio input and token output
         let (audio_producer, audio_consumer) = RingBuffer::new(rx_buffer_size);
         let (token_producer, token_consumer) = RingBuffer::new(tx_buffer_size);
-        let previous_token = model.config.blank_idx.clone() as i32;
+        let previous_token = model.config.blank_idx as i32;
 
         let engine = Self {
             model,

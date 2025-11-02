@@ -1,5 +1,7 @@
 use crate::{silero, utils};
 use rtrb::{Consumer, Producer, RingBuffer};
+use async_trait::async_trait;
+use frame_processor::FrameProcessor;
 
 #[derive(Debug, Clone)]
 pub struct SpeechSegment {
@@ -38,6 +40,7 @@ pub struct StreamingVad {
     speech_producer: Producer<f32>,
     rx_buffer_size: usize,
     tx_buffer_size: usize,
+    is_finished_flag: bool,
 }
 
 // Exact same Params struct as vad.rs
@@ -225,6 +228,7 @@ impl StreamingVad {
             speech_producer,
             rx_buffer_size,
             tx_buffer_size,
+            is_finished_flag: false,
         };
 
         (vad, audio_producer, speech_consumer)
@@ -232,39 +236,41 @@ impl StreamingVad {
 
     pub fn process_audio(&mut self) -> Result<(), ort::Error> {
         // Process all available complete frames from the ring buffer
-        while self.audio_consumer.slots() >= self.params.frame_size_samples {
-            match self
-                .audio_consumer
-                .read_chunk(self.params.frame_size_samples)
-            {
-                Ok(frame) => {
-                    let (first, second) = frame.as_slices();
-                    let frame_data = [first, second].concat();
-                    frame.commit_all();
-                    self.process_frame(&frame_data)?;
-                }
-                Err(_) => unreachable!(), // No more complete frames available
-            }
+        // This method maintains backward compatibility by using a synchronous interface
+        // It uses the same logic as the trait implementation but in a synchronous manner
+        while self.has_next_frame() {
+            self.process_frame_sync()?;
         }
         Ok(())
     }
 
-    fn process_frame(&mut self, frame: &[f32]) -> Result<(), ort::Error> {
-        let speech_prob = self.silero.calc_level(frame)?;
+    fn process_frame_sync(&mut self) -> Result<(), ort::Error> {
+        // Read one frame from the ring buffer
+        if let Ok(frame) = self
+            .audio_consumer
+            .read_chunk(self.params.frame_size_samples)
+        {
+            let (first, second) = frame.as_slices();
+            let frame_data = [first, second].concat();
+            frame.commit_all();
 
-        // Update state with proper VAD logic
-        self.state.update(&self.params, speech_prob);
+            // Process through Silero VAD
+            let speech_prob = self.silero.calc_level(&frame_data)?;
 
-        // Only send frame to speech producer if we're in triggered state
-        if self.state.triggered {
-            // Use the efficient chunk writing method if available
-            if let Ok(chunk) = self.speech_producer.write_chunk_uninit(frame.len()) {
-                chunk.fill_from_iter(frame.iter().copied());
-            } else {
-                // Fallback to individual pushes if chunk writing fails
-                for &sample in frame {
-                    if self.speech_producer.push(sample).is_err() {
-                        break; // Buffer full, skip remaining samples
+            // Update state with proper VAD logic
+            self.state.update(&self.params, speech_prob);
+
+            // Only send frame to speech producer if we're in triggered state
+            if self.state.triggered {
+                // Use the efficient chunk writing method if available
+                if let Ok(chunk) = self.speech_producer.write_chunk_uninit(frame_data.len()) {
+                    chunk.fill_from_iter(frame_data.iter().copied());
+                } else {
+                    // Fallback to individual pushes if chunk writing fails
+                    for &sample in &frame_data {
+                        if self.speech_producer.push(sample).is_err() {
+                            break; // Buffer full, skip remaining samples
+                        }
                     }
                 }
             }
@@ -304,13 +310,45 @@ impl StreamingVad {
     }
 }
 
+#[async_trait]
+impl FrameProcessor for StreamingVad {
+    type Error = ort::Error;
+
+    fn has_next_frame(&self) -> bool {
+        self.audio_consumer.slots() >= self.params.frame_size_samples
+    }
+
+    async fn process_frame(&mut self) -> Result<(), Self::Error> {
+        // Delegate to the synchronous implementation
+        // The Silero model operations are CPU-bound, not I/O-bound,
+        // so there's no benefit to making them truly async
+        self.process_frame_sync()
+    }
+
+    fn is_finished(&self) -> bool {
+        self.is_finished_flag && !self.has_next_frame()
+    }
+
+    fn mark_finished(&mut self) {
+        self.is_finished_flag = true;
+    }
+
+    async fn finalize(&mut self) -> Result<(), Self::Error> {
+        // Check for any ongoing speech at the end
+        let total_samples = self.state.current_sample;
+        self.state
+            .check_for_last_speech(total_samples, &self.params);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::utils::SampleRate;
 
-    #[test]
-    fn test_streaming_vad_basic() {
+    #[tokio::test]
+    async fn test_streaming_vad_basic() {
         let silero = silero::Silero::new(SampleRate::SixteenkHz, "../../models/silero_vad.onnx")
             .expect("Failed to create Silero model");
 

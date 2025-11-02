@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::vocabulary::Vocabulary;
+use crate::vocab::Vocabulary;
 
 // Token with its timestamp information
 // start and end are in seconds
@@ -43,7 +43,7 @@ impl ParakeetTDTDecoder {
         let encoder_stride = 8;
 
         for (i, &token_id) in tokens.iter().enumerate() {
-            if let Some(token_text) = self.vocab.id_to_text(token_id) {
+            if let Some(token_text) = self.vocab.decode_token(token_id as i32) {
                 let frame = frame_indices[i];
                 let start = (frame * encoder_stride * hop_length) as f32 / sample_rate as f32;
                 let end = if i + 1 < frame_indices.len() {

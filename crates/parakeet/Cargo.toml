@@ -4,16 +4,19 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+async-trait = "0.1"
+frame-processor = { path = "../frame-processor" }
+hound = { version = "3.5.1", optional = true }
+ndarray = "0.16.1"
+ndarray-stats = "0.6.0"
 ort = { version = "2.0.0-rc.10", features = ["ndarray"] }
+rtrb = "0.3.2"
+rustfft = "6.4.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 tokenizers = "0.22.1"
-ndarray = "0.16.1"
-rustfft = "6.4.1"
-ndarray-stats = "0.6.0"
-hound = { version = "3.5.1", optional = true }
-rtrb = "0.3.2"
 tokio = "1.48.0"
+tracing = "0.1"
 
 [dev-dependencies]
 hound = "3.5.1"
@@ -23,22 +26,22 @@ tempfile = "3.8"
 default = []
 audio = ["hound"]
 
-[[example]]
-name = "transcribe_audio"
-required-features = ["audio"]
+# [[example]]
+# name = "transcribe_audio"
+# required-features = ["audio"]
 
-[[example]]
-name = "debug_transcribe"
-required-features = ["audio"]
+# [[example]]
+# name = "debug_transcribe"
+# required-features = ["audio"]
 
-[[example]]
-name = "debug_outputs"
-required-features = ["audio"]
+# [[example]]
+# name = "debug_outputs"
+# required-features = ["audio"]
 
-[[example]]
-name = "streaming_transcribe"
-required-features = ["audio"]
+# [[example]]
+# name = "streaming_transcribe"
+# required-features = ["audio"]
 
-[[example]]
-name = "simple_streaming"
-required-features = ["audio"]
+# [[example]]
+# name = "simple_streaming"
+# required-features = ["audio"]

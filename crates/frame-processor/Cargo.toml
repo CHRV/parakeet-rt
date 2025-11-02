@@ -1,0 +1,9 @@
+[package]
+name = "frame-processor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait = "0.1"
+thiserror = "1.0"
+tokio = { version = "1.0", features = ["rt"] }

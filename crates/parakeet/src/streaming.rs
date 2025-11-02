@@ -3,6 +3,8 @@ use crate::parakeet_tdt::{ParakeetTDTModel, State};
 use crate::vocab::Vocabulary;
 use ndarray::{Array1, Array2, Array3};
 use rtrb::{Consumer, Producer, RingBuffer};
+use async_trait::async_trait;
+use frame_processor::FrameProcessor;
 
 /// Context configuration for streaming inference
 #[derive(Debug, Clone)]
@@ -241,8 +243,9 @@ impl StreamingParakeetTDT {
     /// This should be called regularly to process incoming audio
     pub async fn process_audio(&mut self) -> Result<()> {
         // Process available chunks and emit tokens
-        while self.buffer.has_next_chunk() {
-            self.process_next_chunk().await?;
+        // Uses trait methods internally for consistency
+        while self.has_next_frame() {
+            self.process_frame().await?;
         }
 
         Ok(())
@@ -373,6 +376,34 @@ impl StreamingParakeetTDT {
 
     pub fn tx_buffer_size(&self) -> usize {
         self.tx_buffer_size
+    }
+}
+
+/// Implementation of FrameProcessor trait for StreamingParakeetTDT
+#[async_trait]
+impl FrameProcessor for StreamingParakeetTDT {
+    type Error = crate::error::Error;
+
+    fn has_next_frame(&self) -> bool {
+        self.buffer.has_next_chunk()
+    }
+
+    async fn process_frame(&mut self) -> std::result::Result<(), Self::Error> {
+        self.process_next_chunk().await?;
+        Ok(())
+    }
+
+    fn is_finished(&self) -> bool {
+        self.buffer.is_finished && !self.has_next_frame()
+    }
+
+    fn mark_finished(&mut self) {
+        self.buffer.finish();
+    }
+
+    async fn finalize(&mut self) -> std::result::Result<(), Self::Error> {
+        // No additional finalization needed for Parakeet
+        Ok(())
     }
 }
 

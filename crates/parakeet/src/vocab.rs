@@ -1,10 +1,11 @@
+use crate::error::{Error, Result};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-use crate::error::{Error, Result};
 
 /// Vocabulary for decoding token IDs to text
+#[derive(Debug)]
 pub struct Vocabulary {
     /// Map from token ID to token text
     id_to_token: HashMap<i32, String>,
@@ -15,15 +16,21 @@ pub struct Vocabulary {
 impl Vocabulary {
     /// Load vocabulary from a vocab.txt file
     pub fn from_file<P: AsRef<Path>>(vocab_path: P) -> Result<Self> {
-        let file = File::open(&vocab_path)
-            .map_err(|e| Error::Config(format!("Failed to open vocab file {}: {}", vocab_path.as_ref().display(), e)))?;
+        let file = File::open(&vocab_path).map_err(|e| {
+            Error::Config(format!(
+                "Failed to open vocab file {}: {}",
+                vocab_path.as_ref().display(),
+                e
+            ))
+        })?;
 
         let reader = BufReader::new(file);
         let mut id_to_token = HashMap::new();
         let mut token_to_id = HashMap::new();
 
         for line in reader.lines() {
-            let line = line.map_err(|e| Error::Config(format!("Failed to read vocab line: {}", e)))?;
+            let line =
+                line.map_err(|e| Error::Config(format!("Failed to read vocab line: {}", e)))?;
             let line = line.trim();
 
             if line.is_empty() {
@@ -37,7 +44,8 @@ impl Vocabulary {
             }
 
             let token_text = parts[1].to_string();
-            let token_id = parts[0].parse::<i32>()
+            let token_id = parts[0]
+                .parse::<i32>()
                 .map_err(|e| Error::Config(format!("Invalid token ID '{}': {}", parts[0], e)))?;
 
             id_to_token.insert(token_id, token_text.clone());

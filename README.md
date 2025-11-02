@@ -271,7 +271,3 @@ cargo run --bin parakeet-mic -- \
 - Rust 1.70+
 - ONNX Runtime (automatically handled by `ort` crate)
 - Audio input device (for microphone demo)
-
-## License
-
-See LICENSE file for details.

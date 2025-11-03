@@ -10,7 +10,6 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
@@ -80,71 +79,6 @@ struct Args {
     save_audio: Option<String>,
 }
 
-/// WebSocket handler that receives audio data
-async fn handle_websocket(
-    ws_stream: WebSocketStream<TcpStream>,
-    mut audio_producer: rtrb::Producer<f32>,
-    audio_writer: AudioWriter,
-    shutdown: Arc<AtomicBool>,
-) -> Result<()> {
-    let (mut ws_sender, mut ws_receiver) = ws_stream.split();
-
-    println!("Client connected");
-
-    while !shutdown.load(Ordering::Relaxed) {
-        tokio::select! {
-            msg = ws_receiver.next() => {
-                match msg {
-                    Some(Ok(Message::Binary(data))) => {
-                        // Expect audio data as f32 samples (4 bytes per sample)
-                        if data.len() % 4 != 0 {
-                            eprintln!("Invalid audio data length: {}", data.len());
-                            continue;
-                        }
-
-                        // Convert bytes to f32 samples
-                        for chunk in data.chunks_exact(4) {
-                            let sample = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-
-                            // Send to processing pipeline
-                            if audio_producer.push(sample).is_err() {
-                                // Buffer full, skip sample
-                            }
-
-                            // Write to audio file
-                            let _ = audio_writer.write_sample(sample);
-                        }
-                    }
-                    Some(Ok(Message::Text(text))) => {
-                        println!("Received text message: {}", text);
-                    }
-                    Some(Ok(Message::Close(_))) => {
-                        println!("Client disconnected");
-                        break;
-                    }
-                    Some(Err(e)) => {
-                        eprintln!("WebSocket error: {}", e);
-                        break;
-                    }
-                    None => {
-                        println!("WebSocket stream ended");
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            _ = tokio::time::sleep(tokio::time::Duration::from_millis(10)) => {
-                // Check shutdown periodically
-            }
-        }
-    }
-
-    // Send close message
-    let _ = ws_sender.send(Message::Close(None)).await;
-
-    Ok(())
-}
-
 /// Processing thread that uses FrameProcessor trait
 async fn processing_thread(mut processor: StreamingParakeetTDT) -> Result<()> {
     processor.process_loop().await.map_err(|e| anyhow!("{}", e))?;
@@ -152,23 +86,37 @@ async fn processing_thread(mut processor: StreamingParakeetTDT) -> Result<()> {
 }
 
 /// Output thread that consumes tokens and sends them back via WebSocket
-fn output_thread(
+async fn output_thread(
     mut token_consumer: rtrb::Consumer<TokenResult>,
     output_writer: OutputWriter,
+    ws_sender: Arc<tokio::sync::Mutex<futures_util::stream::SplitSink<WebSocketStream<TcpStream>, Message>>>,
     shutdown: Arc<AtomicBool>,
 ) -> Result<OutputWriter> {
     let mut text_buffer = String::new();
+    println!("Output thread started");
 
     while !shutdown.load(Ordering::Relaxed) || token_consumer.slots() > 0 {
         let mut new_tokens = Vec::new();
 
         while let Ok(token_result) = token_consumer.pop() {
+            println!("Received token: id={}, text={:?}", token_result.token_id, token_result.text);
+
             if let Some(ref token_text) = token_result.text {
                 if let Some(text_part) = token_to_text(token_text, text_buffer.is_empty()) {
                     text_buffer.push_str(&text_part);
+
+                    // Print to console
                     print!("{}", text_part);
                     use std::io::{self, Write};
                     io::stdout().flush().unwrap();
+
+                    // Send to browser via WebSocket
+                    let mut sender = ws_sender.lock().await;
+                    if let Err(e) = sender.send(Message::Text(text_part.clone())).await {
+                        eprintln!("Failed to send text to WebSocket: {}", e);
+                    } else {
+                        println!(" [sent to browser]");
+                    }
 
                     if text_part.contains('.') || text_part.contains('?') || text_part.contains('!') {
                         println!();
@@ -186,7 +134,7 @@ fn output_thread(
             }
         }
 
-        thread::sleep(std::time::Duration::from_millis(50));
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     }
 
     if !text_buffer.trim().is_empty() {
@@ -255,7 +203,7 @@ async fn main() -> Result<()> {
     println!("  • Right context: {:.0}ms", args.right_context * 1000.0);
     println!("  • Total latency: {:.0}ms", context.latency_secs(args.sample_rate as usize) * 1000.0);
 
-    let (streaming_engine, audio_producer, token_consumer) =
+    let (streaming_engine, mut audio_producer, token_consumer) =
         StreamingParakeetTDT::new_with_vocab(model, context, vocab);
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -273,6 +221,15 @@ async fn main() -> Result<()> {
     println!("\n🌐 Waiting for client connection...");
     println!("Open the HTML page in your browser to start transcription");
 
+    // Accept one connection
+    let (stream, _) = listener.accept().await?;
+    let ws_stream = tokio_tungstenite::accept_async(stream).await?;
+
+    let (ws_sender, mut ws_receiver) = ws_stream.split();
+    let ws_sender = Arc::new(tokio::sync::Mutex::new(ws_sender));
+
+    println!("Client connected");
+
     // Spawn processing thread
     let processing_handle = tokio::spawn(async move {
         processing_thread(streaming_engine).await
@@ -281,24 +238,76 @@ async fn main() -> Result<()> {
     // Spawn output thread
     let output_handle = {
         let shutdown = shutdown.clone();
-        thread::spawn(move || output_thread(token_consumer, output_writer, shutdown))
+        let ws_sender = ws_sender.clone();
+        tokio::spawn(async move {
+            output_thread(token_consumer, output_writer, ws_sender, shutdown).await
+        })
     };
 
-    // Accept one connection
-    let (stream, _) = listener.accept().await?;
-    let ws_stream = tokio_tungstenite::accept_async(stream).await?;
+    // Handle WebSocket messages in main task
+    let ws_handle = {
+        let shutdown = shutdown.clone();
+        let mut audio_count = 0usize;
+        tokio::spawn(async move {
+            while !shutdown.load(Ordering::Relaxed) {
+                tokio::select! {
+                    msg = ws_receiver.next() => {
+                        match msg {
+                            Some(Ok(Message::Binary(data))) => {
+                                if data.len() % 4 != 0 {
+                                    eprintln!("Invalid audio data length: {}", data.len());
+                                    continue;
+                                }
 
-    // Handle WebSocket connection
-    let ws_handle = tokio::spawn(async move {
-        handle_websocket(ws_stream, audio_producer, audio_writer, shutdown).await
-    });
+                                let sample_count = data.len() / 4;
+                                audio_count += sample_count;
 
-    // Wait for WebSocket handler to complete
+                                // Log every second of audio (16000 samples)
+                                if audio_count % 16000 < sample_count {
+                                    println!("Received {} audio samples ({:.1}s total)", audio_count, audio_count as f32 / 16000.0);
+                                }
+
+                                for chunk in data.chunks_exact(4) {
+                                    let sample = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+
+                                    if audio_producer.push(sample).is_err() {
+                                        // Buffer full, skip sample
+                                    }
+
+                                    let _ = audio_writer.write_sample(sample);
+                                }
+                            }
+                            Some(Ok(Message::Text(text))) => {
+                                println!("Received text message: {}", text);
+                            }
+                            Some(Ok(Message::Close(_))) => {
+                                println!("Client disconnected");
+                                shutdown.store(true, Ordering::Relaxed);
+                                break;
+                            }
+                            Some(Err(e)) => {
+                                eprintln!("WebSocket error: {}", e);
+                                shutdown.store(true, Ordering::Relaxed);
+                                break;
+                            }
+                            None => {
+                                println!("WebSocket stream ended");
+                                shutdown.store(true, Ordering::Relaxed);
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(10)) => {}
+                }
+            }
+        })
+    };
+
+    // Wait for all tasks
     let _ = ws_handle.await;
-
-    // Wait for processing and output threads
     let _ = processing_handle.await;
-    let output_result = output_handle.join().unwrap();
+    let output_result = output_handle.await.unwrap();
 
     let output_writer = match output_result {
         Ok(writer) => writer,

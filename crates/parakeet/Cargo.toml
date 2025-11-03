@@ -25,6 +25,7 @@ tempfile = "3.8"
 [features]
 default = []
 audio = ["hound"]
+cuda = ["ort/cuda"]
 
 # [[example]]
 # name = "transcribe_audio"

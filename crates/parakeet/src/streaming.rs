@@ -290,7 +290,7 @@ impl StreamingParakeetTDT {
         let end_frame = std::cmp::min(start_frame + chunk_frames, encoder_len[0] as usize);
 
         // Process frames for this chunk only
-        for frame_idx in start_frame..end_frame {
+        for frame_idx in start_frame.saturating_sub(20)..end_frame {
             if frame_idx >= encoder_out.shape()[1] {
                 break;
             }

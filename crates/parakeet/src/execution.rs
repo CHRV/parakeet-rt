@@ -11,8 +11,8 @@ use ort::session::builder::SessionBuilder;
 pub enum ExecutionProvider {
     #[default]
     Cpu,
-    //#[cfg(feature = "cuda")]
-    //Cuda,
+    #[cfg(feature = "cuda")]
+    Cuda,
     //#[cfg(feature = "tensorrt")]
     //TensorRT,
     //#[cfg(feature = "coreml")]
@@ -77,7 +77,7 @@ impl ModelConfig {
         //    feature = "openvino",
         //    feature = "webgpu"
         //))]
-        
+
         use ort::session::builder::GraphOptimizationLevel;
 
         let mut builder = builder
@@ -88,11 +88,11 @@ impl ModelConfig {
         builder = match self.execution_provider {
             ExecutionProvider::Cpu => builder,
 
-            //#[cfg(feature = "cuda")]
-            //ExecutionProvider::Cuda => builder.with_execution_providers([
-            //    ort::execution_providers::CUDAExecutionProvider::default().build(),
-            //    CPUExecutionProvider::default().build().error_on_failure(),
-            //])?,
+            #[cfg(feature = "cuda")]
+            ExecutionProvider::Cuda => builder.with_execution_providers([
+                ort::execution_providers::CUDAExecutionProvider::default().build(),
+                CPUExecutionProvider::default().build().error_on_failure(),
+            ])?,
 
             //#[cfg(feature = "tensorrt")]
             //ExecutionProvider::TensorRT => builder.with_execution_providers([

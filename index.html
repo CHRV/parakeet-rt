@@ -422,7 +422,18 @@
                     // Receive transcription text from server
                     if (typeof event.data === 'string') {
                         const text = event.data;
-                        transcriptDiv.textContent += text;
+
+                        // Append text to the transcript
+                        const textNode = document.createTextNode(text);
+                        transcriptDiv.appendChild(textNode);
+
+                        // Create new paragraph after sentence-ending punctuation
+                        if (text === '.' || text === '!' || text === '?') {
+                            const paragraph = document.createElement('br');
+                            paragraph.style.marginBottom = '1em';
+                            transcriptDiv.appendChild(paragraph);
+                        }
+
                         // Auto-scroll to bottom
                         transcriptDiv.parentElement.scrollTop = transcriptDiv.parentElement.scrollHeight;
                     }
@@ -479,11 +490,6 @@
         startBtn.addEventListener('click', startRecording);
         stopBtn.addEventListener('click', stopRecording);
 
-        // Handle window resize
-        window.addEventListener('resize', () => {
-            canvas.width = canvas.offsetWidth;
-            canvas.height = canvas.offsetHeight;
-        });
     </script>
 </body>
 

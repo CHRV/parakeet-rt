@@ -21,7 +21,10 @@ impl std::str::FromStr for OutputFormat {
             "txt" => Ok(OutputFormat::Txt),
             "json" => Ok(OutputFormat::Json),
             "csv" => Ok(OutputFormat::Csv),
-            _ => Err(anyhow::anyhow!("Unsupported output format: {}. Use txt, json, or csv", s)),
+            _ => Err(anyhow::anyhow!(
+                "Unsupported output format: {}. Use txt, json, or csv",
+                s
+            )),
         }
     }
 }
@@ -74,10 +77,13 @@ impl OutputWriter {
 
     pub fn write_tokens(&self, tokens: &[TokenResult]) -> Result<()> {
         if let Some(writer) = &self.writer {
-
             for token in tokens {
                 let time_seconds = token.timestamp as f32 / 16000.0;
-                let session_time = self.start_time.elapsed().unwrap_or(Duration::ZERO).as_secs_f32();
+                let session_time = self
+                    .start_time
+                    .elapsed()
+                    .unwrap_or(Duration::ZERO)
+                    .as_secs_f32();
 
                 match self.format {
                     OutputFormat::Txt => {
@@ -103,8 +109,11 @@ impl OutputWriter {
                     OutputFormat::Csv => {
                         let mut writer = writer.lock().unwrap();
                         let text_field = token.text.as_deref().unwrap_or("");
-                        writeln!(writer, "{},{},\"{}\",{:.3}",
-                            token.timestamp, token.token_id, text_field, time_seconds)?;
+                        writeln!(
+                            writer,
+                            "{},{},\"{}\",{:.3}",
+                            token.timestamp, token.token_id, text_field, time_seconds
+                        )?;
                         writer.flush()?;
                     }
                 }
@@ -164,8 +173,7 @@ impl AudioWriter {
         Ok(())
     }
 
-
-    pub fn finalize(self) -> Result<()> {
+    pub fn _finalize(self) -> Result<()> {
         if let Some(writer) = self.writer {
             let writer = Arc::try_unwrap(writer)
                 .map_err(|_| anyhow::anyhow!("Failed to unwrap Arc for audio writer"))?

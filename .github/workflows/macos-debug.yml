@@ -1,0 +1,26 @@
+name: macOS Debug with tmate
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/rust-action@v1
+        with:
+          toolchain: stable
+
+      - name: Build project
+        run: cargo build --release
+
+      - name: Run download script
+        run: bash download_models.sh
+
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3

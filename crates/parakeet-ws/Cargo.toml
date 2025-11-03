@@ -1,0 +1,21 @@
+[package]
+name = "parakeet-ws"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "parakeet-ws"
+path = "src/main.rs"
+
+[dependencies]
+parakeet = { path = "../parakeet", features = ["audio"] }
+frame-processor = { path = "../frame-processor" }
+tokio = { version = "1.0", features = ["full"] }
+tokio-tungstenite = "0.21"
+futures-util = "0.3"
+anyhow = "1.0"
+clap = { version = "4.0", features = ["derive"] }
+rtrb = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+hound = "3.5"

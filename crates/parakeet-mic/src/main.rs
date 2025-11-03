@@ -17,6 +17,7 @@ use std::time::Duration;
 fn token_to_text(token_text: &str, is_first_token: bool) -> Option<String> {
     if token_text.starts_with('<') && token_text.ends_with('>') {
         // Special tokens like <|endoftext|> - skip them for clean output
+        println!("Skipping special token: {}", token_text);
         return None;
     }
 

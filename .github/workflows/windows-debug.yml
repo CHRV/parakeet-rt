@@ -1,11 +1,11 @@
-name: macOS Debug with tmate
+name: Windows Debug with tmate
 
 on:
   workflow_dispatch:
 
 jobs:
   debug:
-    runs-on: macos-latest
+    runs-on: windows-latest
 
     steps:
       - name: Checkout repository

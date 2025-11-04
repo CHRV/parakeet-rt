@@ -1,42 +1,26 @@
-use std::fmt;
+use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum Error {
-    Io(std::io::Error),
-    Ort(ort::Error),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("ONNX Runtime error: {0}")]
+    Ort(#[from] ort::Error),
+
+    #[error("Audio processing error: {0}")]
     Audio(String),
+
+    #[error("Model error: {0}")]
     Model(String),
+
+    #[error("Tokenizer error: {0}")]
     Tokenizer(String),
+
+    #[error("Config error: {0}")]
     Config(String),
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::Io(e) => write!(f, "IO error: {e}"),
-            Error::Ort(e) => write!(f, "ONNX Runtime error: {e}"),
-            Error::Audio(msg) => write!(f, "Audio processing error: {msg}"),
-            Error::Model(msg) => write!(f, "Model error: {msg}"),
-            Error::Tokenizer(msg) => write!(f, "Tokenizer error: {msg}"),
-            Error::Config(msg) => write!(f, "Config error: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
-impl From<std::io::Error> for Error {
-    fn from(e: std::io::Error) -> Self {
-        Error::Io(e)
-    }
-}
-
-impl From<ort::Error> for Error {
-    fn from(e: ort::Error) -> Self {
-        Error::Ort(e)
-    }
 }
 
 impl From<serde_json::Error> for Error {
@@ -44,7 +28,8 @@ impl From<serde_json::Error> for Error {
         Error::Config(e.to_string())
     }
 }
-#[cfg(test)]
+
+#[cfg(any(feature = "audio", test))]
 impl From<hound::Error> for Error {
     fn from(e: hound::Error) -> Self {
         Error::Audio(e.to_string())

@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use frame_processor::FrameProcessor;
 use ndarray::{Array1, Array2, Array3};
 use rtrb::{Consumer, Producer, RingBuffer};
+use tracing;
 
 /// Context configuration for streaming inference
 #[derive(Debug, Clone)]
@@ -214,6 +215,15 @@ impl StreamingParakeetTDT {
         let rx_buffer_size = context.total_samples() * 2; // 2 seconds of input audio buffer
         let tx_buffer_size = 1024; // Buffer for 1000 tokens
 
+        tracing::debug!(
+            left_samples = context.left_samples,
+            chunk_samples = context.chunk_samples,
+            right_samples = context.right_samples,
+            rx_buffer_size = rx_buffer_size,
+            tx_buffer_size = tx_buffer_size,
+            "Initializing streaming engine with buffer sizes and context configuration"
+        );
+
         // Create ring buffers for audio input and token output
         let (audio_producer, audio_consumer) = RingBuffer::new(rx_buffer_size);
         let (token_producer, token_consumer) = RingBuffer::new(tx_buffer_size);
@@ -236,18 +246,23 @@ impl StreamingParakeetTDT {
 
     /// Process audio from the input ring buffer
     /// This should be called regularly to process incoming audio
+    #[tracing::instrument(skip(self))]
     pub async fn process_audio(&mut self) -> Result<()> {
         // Process available chunks and emit tokens
         // Uses trait methods internally for consistency
+        let mut chunk_count = 0;
         while self.has_next_frame() {
             self.process_frame().await?;
+            chunk_count += 1;
         }
 
+        tracing::debug!(chunk_count = chunk_count, "Processed audio chunks");
         Ok(())
     }
 
     /// Mark the audio stream as finished
     pub async fn finalize(&mut self) {
+        tracing::info!("Finalizing streaming engine");
         self.buffer.finish();
 
         // Process any remaining audio
@@ -255,7 +270,10 @@ impl StreamingParakeetTDT {
     }
 
     /// Process a single chunk and return new tokens with timestamps
+    #[tracing::instrument(skip(self))]
     async fn process_next_chunk(&mut self) -> Result<Vec<(i32, usize)>> {
+        tracing::trace!("Processing next audio chunk");
+
         let (audio_chunk, chunk_length) = match self.buffer.get_next_chunk() {
             Some(chunk) => chunk,
             None => return Ok(Vec::new()),
@@ -267,9 +285,11 @@ impl StreamingParakeetTDT {
         let audio_lengths_val = audio_lengths[0];
 
         // Run preprocessing
+        tracing::trace!("Running preprocessing");
         let (features, features_len) = self.model.preprocess(audio_chunk, audio_lengths).await?;
 
         // Run encoder
+        tracing::trace!("Running encoder");
         let (encoder_out, encoder_len) = self.model.encode(features, features_len).await?;
 
         // Process only the chunk portion (excluding context)
@@ -294,6 +314,13 @@ impl StreamingParakeetTDT {
             if frame_idx >= encoder_out.shape()[1] {
                 break;
             }
+
+            tracing::debug!(
+                frame_idx = frame_idx,
+                start_frame = start_frame,
+                end_frame = end_frame,
+                "Processing frame"
+            );
 
             // Get encoding at this frame - encoder_out shape is (batch, time, features)
             let encoding = encoder_out.slice(ndarray::s![0, frame_idx, ..]).to_owned();
@@ -343,10 +370,15 @@ impl StreamingParakeetTDT {
             }
         }
 
+        tracing::debug!(
+            emitted_tokens = new_tokens.len(),
+            "Emitted tokens from chunk"
+        );
         Ok(new_tokens)
     }
 
     /// Decode a single frame
+    #[tracing::instrument(skip(self, encoding, tokens))]
     async fn decode_frame(
         &mut self,
         encoding: Array1<f32>,
@@ -357,11 +389,13 @@ impl StreamingParakeetTDT {
             c: Array3::<f32>::zeros((2, 1, 640)),
         });
 
+        tracing::trace!("Calling model decode");
         self.model.decode(tokens, prev_state, encoding).await
     }
 
     /// Reset the streaming state
     pub fn reset(&mut self) {
+        tracing::debug!("Resetting streaming state");
         self.buffer.reset();
         // Note: We can't clear the output buffer from here since we don't have access to the consumer
         self.state = None;

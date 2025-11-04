@@ -1,5 +1,6 @@
 use crate::error::Result;
 use crate::vocab::Vocabulary;
+use tracing;
 
 // Token with its timestamp information
 // start and end are in seconds
@@ -29,6 +30,7 @@ impl ParakeetTDTDecoder {
 
     /// Decode tokens with timestamps
     /// For TDT models, greedy decoding is done in the model, here we just convert to text
+    #[tracing::instrument(skip(self, tokens, frame_indices, _durations))]
     pub fn decode_with_timestamps(
         &self,
         tokens: &[usize],
@@ -37,6 +39,10 @@ impl ParakeetTDTDecoder {
         hop_length: usize,
         sample_rate: usize,
     ) -> Result<TranscriptionResult> {
+        tracing::debug!(
+            token_count = tokens.len(),
+            "Decoding tokens with timestamps"
+        );
         let mut result_tokens = Vec::new();
         let mut full_text = String::new();
         // TDT encoder does 8x subsampling
@@ -71,8 +77,11 @@ impl ParakeetTDTDecoder {
             }
         }
 
+        let final_text = full_text.trim().to_string();
+        tracing::debug!(transcription_length = final_text.len(), "Decoding complete");
+
         Ok(TranscriptionResult {
-            text: full_text.trim().to_string(),
+            text: final_text,
             tokens: result_tokens,
         })
     }

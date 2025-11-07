@@ -27,6 +27,8 @@ tempfile = "3.8"
 default = []
 audio = ["hound"]
 cuda = ["ort/cuda"]
+openvino = ["ort/openvino"]
+coreml = ["ort/coreml"]
 
 # [[example]]
 # name = "transcribe_audio"

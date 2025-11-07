@@ -13,6 +13,8 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
+use tracing;
+use tracing_subscriber::EnvFilter;
 
 mod output;
 use output::{AudioWriter, OutputFormat, OutputWriter};
@@ -134,7 +136,7 @@ async fn output_thread(
             }
         }
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        tokio::task::yield_now().await;
     }
 
     if !text_buffer.trim().is_empty() {
@@ -146,6 +148,15 @@ async fn output_thread(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Initialize tracing subscriber
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_thread_names(true)
+        .with_target(true)
+        .init();
+
+    tracing::info!("Starting Parakeet transcription");
+
     let args = Args::parse();
 
     if !Path::new(&args.models).exists() {

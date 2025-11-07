@@ -74,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Parakeet uses a three-stage pipeline for real-time speech recognition:
 
-```
+```bash
 Audio Input → [Ring Buffer] → Processing Engine → [Ring Buffer] → Token Output
 ```
 
@@ -112,9 +112,10 @@ let context = ContextConfig::new(
 **Latency calculation**: `chunk_size + right_context`
 
 Example configurations:
+
 - **Low latency** (500ms): `chunk=0.25s, right=0.25s`
-- **Balanced** (750ms): `chunk=0.5s, right=0.25s`
-- **High quality** (1000ms): `chunk=0.75s, right=0.25s`
+- **Balanced** (1000ms): `chunk=0.75s, right=0.25s`
+- **High quality** (2000ms): `chunk=1.75s, right=0.25s`
 
 ### Execution Configuration
 
@@ -233,6 +234,7 @@ mkdir -p models
 ```
 
 This will download the Parakeet TDT 0.6B v3 model from [Hugging Face](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx):
+
 - `encoder-model.onnx` - Encoder model (~600MB)
 - `encoder-model.onnx.data` - Encoder weights
 - `decoder_joint-model.onnx` - Decoder/Joint model

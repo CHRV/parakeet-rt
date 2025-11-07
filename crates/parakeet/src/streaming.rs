@@ -212,7 +212,7 @@ impl StreamingParakeetTDT {
         vocab: Option<Vocabulary>,
     ) -> (Self, Producer<f32>, Consumer<TokenResult>) {
         // Buffer sizes optimized for real-time processing
-        let rx_buffer_size = context.total_samples() * 2; // 2 seconds of input audio buffer
+        let rx_buffer_size = context.total_samples() * 50; // 2 seconds of input audio buffer
         let tx_buffer_size = 1024; // Buffer for 1000 tokens
 
         tracing::debug!(
@@ -309,8 +309,120 @@ impl StreamingParakeetTDT {
         let chunk_frames = (chunk_length * encoder_len[0] as usize) / audio_chunk_shape;
         let end_frame = std::cmp::min(start_frame + chunk_frames, encoder_len[0] as usize);
 
+        let mut previous_token = self.model.config.blank_idx;
+
+        let state: Option<State> = self.state.clone();
+
+        self.state = None;
+
+        let mut previous_frame_idx: Option<usize> = None;
+
+        let mut frame_idx = 0;
+        while frame_idx < start_frame {
+            if frame_idx >= encoder_out.shape()[1] {
+                break;
+            }
+
+            tracing::debug!(
+                frame_idx = frame_idx,
+                start_frame = 0,
+                end_frame = start_frame,
+                "Processing frame"
+            );
+
+            // Get encoding at this frame - encoder_out shape is (batch, time, features)
+            let encoding = encoder_out.slice(ndarray::s![0, frame_idx, ..]).to_owned();
+
+            // Decode this frame
+            let (probs, step, new_state) = self
+                .decode_frame(encoding, &[previous_token as i32])
+                .await?;
+
+            // Get token with highest probability
+            let token = probs
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(idx, _)| idx)
+                .unwrap_or(self.model.config.blank_idx) as i32;
+
+            // Calculate frame index for timestamp (decoder expects frame indices)
+            let timestamp = frame_idx;
+
+            frame_idx = if step == 0 || token == self.model.config.blank_idx as i32 {
+                frame_idx + 1
+            } else {
+                frame_idx + step
+            };
+
+            if token != self.model.config.blank_idx as i32 {
+                self.state = Some(new_state.clone());
+                // chunk_tokens.push(token);
+                new_tokens.push((token, timestamp));
+                previous_token = token as usize;
+                //last_frame_idx = frame_idx;
+
+                // Send tokens to output ring buffer
+                //let text = self
+                //    .vocab
+                //    .as_ref()
+                //    .and_then(|v| v.decode_token(token))
+                //    .map(|s| s.to_string());
+
+                //let token_result = TokenResult {
+                //    token_id: token,
+                //    timestamp: frame_idx,
+                //    confidence: 1.0, // TODO: Add confidence calculation
+                //    text,
+                //};
+
+                // Push token to output if producer is available
+                //if let Some(producer) = &mut self.token_producer {
+                //    if producer.push(token_result).is_err() {
+                //        // Output buffer full, could log warning
+                //        break;
+                //    }
+                //}
+            }
+
+            if token == self.previous_token
+                && self.previous_token != self.model.config.blank_idx as i32
+            {
+                previous_frame_idx = Some(new_tokens.len());
+            }
+        }
+
+        if let Some(previous_frame_idx) = previous_frame_idx {
+            for token in &new_tokens[previous_frame_idx..] {
+                let text = self
+                    .vocab
+                    .as_ref()
+                    .and_then(|v| v.decode_token(token.0))
+                    .map(|s| s.to_string());
+
+                let token_result = TokenResult {
+                    token_id: token.0,
+                    timestamp: 0,
+                    confidence: 1.0, // TODO: Add confidence calculation
+                    text,
+                };
+
+                if let Some(producer) = &mut self.token_producer {
+                    if producer.push(token_result).is_err() {
+                        // Output buffer full, could log warning
+                        // break;
+                    }
+                }
+            }
+            self.previous_token = new_tokens.last().unwrap().0;
+        } else {
+            self.state = state;
+        }
+
+        new_tokens = vec![];
+
         // Process frames for this chunk only
-        for frame_idx in start_frame.saturating_sub(2)..end_frame {
+        while frame_idx < end_frame {
             if frame_idx >= encoder_out.shape()[1] {
                 break;
             }
@@ -326,7 +438,7 @@ impl StreamingParakeetTDT {
             let encoding = encoder_out.slice(ndarray::s![0, frame_idx, ..]).to_owned();
 
             // Decode this frame
-            let (probs, _step, new_state) =
+            let (probs, step, new_state) =
                 self.decode_frame(encoding, &[self.previous_token]).await?;
 
             // Get token with highest probability
@@ -339,6 +451,12 @@ impl StreamingParakeetTDT {
 
             // Calculate frame index for timestamp (decoder expects frame indices)
             let timestamp = frame_idx;
+
+            frame_idx = if step == 0 || token == self.model.config.blank_idx as i32 {
+                frame_idx + 1
+            } else {
+                frame_idx + step
+            };
 
             if token != self.model.config.blank_idx as i32 {
                 self.state = Some(new_state);

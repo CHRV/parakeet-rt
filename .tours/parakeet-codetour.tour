@@ -1,0 +1,76 @@
+{
+    "title": "Parakeet — Library Tour",
+    "description": "A guided tour through the Parakeet realtime speech-recognition library. Each step points to important files and explains how the pieces fit together.",
+    "steps": [
+        {
+            "title": "Welcome & Quick start",
+            "description": "Start here to get an overview and a minimal example to run the library. Follow the README's Quick Start to download models and run examples.",
+            "file": "README.md",
+            "line": 1,
+            "endLine": 60
+        },
+        {
+            "title": "Crate layout",
+            "description": "Top-level module exports for the `parakeet` crate. See what modules are available (model, streaming, decoder, execution, vocab, utils).",
+            "file": "crates/parakeet/src/lib.rs",
+            "line": 1,
+            "endLine": 40
+        },
+        {
+            "title": "Model: loading & entry points",
+            "description": "The `ParakeetTDTModel::from_pretrained` method locates ONNX files, configures ONNX Runtime sessions and prepares the model for both batch and streaming use.",
+            "file": "crates/parakeet/src/model.rs",
+            "line": 1,
+            "endLine": 120
+        },
+        {
+            "title": "Model: preprocess → encode → decoding",
+            "description": "Follow the `preprocess`, `encode`, and `decoding` methods to see how raw audio becomes encoder features and finally token sequences with timestamps.",
+            "file": "crates/parakeet/src/model.rs",
+            "line": 120,
+            "endLine": 420
+        },
+        {
+            "title": "Decoder helper (timestamps & text)",
+            "description": "`ParakeetTDTDecoder` converts token ids + frame indices into human-readable text with timestamps (handles SentencePiece prefix ▁ and special tokens).",
+            "file": "crates/parakeet/src/decoder.rs",
+            "line": 1,
+            "endLine": 240
+        },
+        {
+            "title": "Streaming engine overview",
+            "description": "`StreamingParakeetTDT` manages ring buffers, context windows (left/chunk/right) and the inference loop. This shows how to create the engine and produce/consume audio & tokens.",
+            "file": "crates/parakeet/src/streaming.rs",
+            "line": 1,
+            "endLine": 220
+        },
+        {
+            "title": "Streaming buffer & chunking",
+            "description": "`StreamingAudioBuffer` implements context-aware chunking (left/right/chunk samples). Understand how context_buffer is kept between chunks and when `has_next_chunk` returns true.",
+            "file": "crates/parakeet/src/streaming.rs",
+            "line": 220,
+            "endLine": 520
+        },
+        {
+            "title": "Microphone example: main flow",
+            "description": "`crates/parakeet-mic/src/main.rs` shows a runnable example using CPAL for audio input, three threads (recording, processing, output) and how to wire `StreamingParakeetTDT` into a real app.",
+            "file": "crates/parakeet-mic/src/main.rs",
+            "line": 1,
+            "endLine": 220
+        },
+        {
+            "title": "Microphone example: thread coordination",
+            "description": "Read the sections that explain ring-buffer abandonment detection and how the pipeline shuts down gracefully without explicit finish signals.",
+            "file": "crates/parakeet-mic/src/main.rs",
+            "line": 220,
+            "endLine": 520
+        },
+        {
+            "title": "Run the demo",
+            "description": "Follow the README 'Example: parakeet-mic' section: download models, then run `cargo run --bin parakeet-mic` and tune `--chunk-size` / `--right-context` for latency vs quality.",
+            "file": "README.md",
+            "line": 120,
+            "endLine": 260
+        }
+    ]
+}

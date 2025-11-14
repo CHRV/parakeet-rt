@@ -15,8 +15,8 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Build project
-        run: cargo build --release
+      #- name: Build project
+      #  run: cargo build --release
 
       - name: Run download script
         run: bash download_models.sh

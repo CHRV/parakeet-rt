@@ -13,6 +13,9 @@ This feature implements a Tauri desktop application with a Svelte frontend that 
 - **cpal**: Cross-platform audio library used for microphone input capture
 - **Transcript Display**: The UI component showing transcribed text in real-time
 - **Audio Visualizer**: The UI component displaying audio waveform during recording
+- **Settings Page**: The UI component for configuring transcription parameters
+- **ORT**: ONNX Runtime, the inference engine used by the Parakeet model
+- **Model Path**: The file system location of the Parakeet model files
 
 ## Requirements
 
@@ -22,10 +25,10 @@ This feature implements a Tauri desktop application with a Svelte frontend that 
 
 #### Acceptance Criteria
 
-1. WHEN the user clicks the "Start" button, THE Tauri App SHALL initialize the Audio Capture using cpal and begin streaming audio to the Streaming Engine
-2. WHILE recording is active, THE Tauri App SHALL disable the "Start" button and enable the "Stop" button
+1. WHEN the user clicks the "Start" button, THE Tauri App SHALL initialize the Audio Capture using the cpal library and begin streaming audio data to the Streaming Engine
+2. WHILE recording is active, THE Tauri App SHALL set the "Start" button to disabled state and set the "Stop" button to enabled state
 3. WHEN the user clicks the "Stop" button, THE Tauri App SHALL terminate the Audio Capture and stop the Streaming Engine
-4. WHEN recording stops, THE Tauri App SHALL re-enable the "Start" button and disable the "Stop" button
+4. WHEN recording stops, THE Tauri App SHALL set the "Start" button to enabled state and set the "Stop" button to disabled state
 
 ### Requirement 2
 
@@ -33,11 +36,11 @@ This feature implements a Tauri desktop application with a Svelte frontend that 
 
 #### Acceptance Criteria
 
-1. WHEN the Streaming Engine produces a token, THE Tauri App SHALL convert the token to text using the vocabulary
-2. WHEN text is generated, THE Transcript Display SHALL append the text to the existing transcript
-3. THE Transcript Display SHALL format text with proper spacing between words
-4. WHEN a sentence-ending punctuation is detected, THE Transcript Display SHALL create a line break
-5. THE Transcript Display SHALL automatically scroll to show the most recent text
+1. WHEN the Streaming Engine produces a token, THE Tauri App SHALL convert the token to text using the vocabulary file
+2. WHEN transcription text is generated, THE Transcript Display SHALL append the text to the existing transcript content
+3. THE Transcript Display SHALL format transcription text with proper spacing between words
+4. WHEN sentence-ending punctuation is detected in the text, THE Transcript Display SHALL insert a line break after the punctuation
+5. WHEN new text is appended to the transcript, THE Transcript Display SHALL scroll the view to show the most recent text
 
 ### Requirement 3
 
@@ -46,7 +49,7 @@ This feature implements a Tauri desktop application with a Svelte frontend that 
 #### Acceptance Criteria
 
 1. WHILE recording is active, THE Audio Visualizer SHALL display a waveform representation of the audio input
-2. THE Audio Visualizer SHALL update at a minimum rate of 30 frames per second
+2. WHILE recording is active, THE Audio Visualizer SHALL update the waveform display at a rate of 30 frames per second or greater
 3. WHEN recording is not active, THE Audio Visualizer SHALL display an empty state
 
 ### Requirement 4
@@ -55,10 +58,10 @@ This feature implements a Tauri desktop application with a Svelte frontend that 
 
 #### Acceptance Criteria
 
-1. WHEN the application starts, THE Tauri App SHALL display a "Ready" status
-2. WHEN recording begins, THE Tauri App SHALL display a "Recording" status with a visual indicator
-3. WHEN an error occurs, THE Tauri App SHALL display an error status with a descriptive message
-4. WHEN recording stops, THE Tauri App SHALL return to "Ready" status
+1. WHEN the application starts, THE Tauri App SHALL display a "Ready" status message
+2. WHEN recording begins, THE Tauri App SHALL display a "Recording" status message with a visual indicator
+3. IF an error occurs, THEN THE Tauri App SHALL display an error status message with a description of the error condition
+4. WHEN recording stops, THE Tauri App SHALL display a "Ready" status message
 
 ### Requirement 5
 
@@ -66,11 +69,11 @@ This feature implements a Tauri desktop application with a Svelte frontend that 
 
 #### Acceptance Criteria
 
-1. THE Tauri App SHALL display a full-page transcript area with a paper-like background
-2. THE Tauri App SHALL display a floating control panel in the bottom-right corner
-3. THE Transcript Display SHALL use a serif font at 20px size with 1.8 line height
-4. THE control panel SHALL include the application title, status indicator, Audio Visualizer, and control buttons
-5. THE Tauri App SHALL use the same color scheme as the WebSocket version
+1. THE Tauri App SHALL display a full-page transcript area with a paper-like background color
+2. THE Tauri App SHALL display a floating control panel positioned in the bottom-right corner of the window
+3. THE Transcript Display SHALL render text using a serif font at 20 pixel size with 1.8 line height spacing
+4. THE Tauri App SHALL display within the control panel the application title, status indicator, Audio Visualizer, and control buttons
+5. THE Tauri App SHALL apply color values matching the color scheme used in the WebSocket version
 
 ### Requirement 6
 
@@ -78,12 +81,12 @@ This feature implements a Tauri desktop application with a Svelte frontend that 
 
 #### Acceptance Criteria
 
-1. THE Tauri App SHALL implement Tauri commands for starting and stopping recording
-2. THE Tauri App SHALL use cpal for cross-platform microphone input capture
-3. THE Tauri App SHALL use the existing StreamingParakeetTDT implementation for audio processing
-4. THE Tauri App SHALL emit events to the frontend when new transcription text is available
-5. THE Tauri App SHALL provide audio level data to the frontend for visualization
-6. THE Tauri App SHALL handle all error conditions in the Rust backend and communicate them to the frontend
+1. THE Tauri App SHALL implement Tauri commands for starting recording and stopping recording
+2. THE Tauri App SHALL use the cpal library for cross-platform microphone input capture
+3. THE Tauri App SHALL use the StreamingParakeetTDT implementation for audio processing
+4. WHEN new transcription text is available, THE Tauri App SHALL emit an event to the frontend containing the text
+5. WHEN audio level data is calculated, THE Tauri App SHALL emit an event to the frontend containing the audio level value for visualization
+6. WHEN an error condition occurs in the Rust backend, THE Tauri App SHALL emit an error event to the frontend containing the error information
 
 ### Requirement 7
 
@@ -91,7 +94,23 @@ This feature implements a Tauri desktop application with a Svelte frontend that 
 
 #### Acceptance Criteria
 
-1. WHEN the application starts, THE Tauri App SHALL load the Parakeet TDT model from the models directory
-2. WHEN the application starts, THE Tauri App SHALL load the vocabulary file
-3. IF model loading fails, THE Tauri App SHALL display an error message to the user
-4. WHEN models are loaded successfully, THE Tauri App SHALL enable the "Start" button
+1. WHEN the application starts, THE Tauri App SHALL load the Parakeet TDT model files from the models directory
+2. WHEN the application starts, THE Tauri App SHALL load the vocabulary file from the models directory
+3. IF model loading fails, THEN THE Tauri App SHALL display an error message to the user describing the failure
+4. WHEN model files are loaded successfully, THE Tauri App SHALL enable the "Start" button
+
+### Requirement 8
+
+**User Story:** As a user, I want to configure transcription settings like model paths and performance parameters, so that I can customize the application for my system
+
+#### Acceptance Criteria
+
+1. THE Tauri App SHALL provide a Settings Page accessible from the main interface
+2. THE Settings Page SHALL provide an input field allowing the user to specify the encoder model file path
+3. THE Settings Page SHALL provide an input field allowing the user to specify the decoder model file path
+4. THE Settings Page SHALL provide an input field allowing the user to specify the vocabulary file path
+5. THE Settings Page SHALL provide an input field allowing the user to configure the ORT thread count with values between 1 and 16 inclusive
+6. WHEN the user modifies a setting value, THE Tauri App SHALL validate the input value before accepting the change
+7. WHEN the user saves settings, THE Tauri App SHALL write the configuration data to persistent storage on disk
+8. WHEN the application starts, THE Tauri App SHALL read saved settings from persistent storage on disk
+9. IF no saved settings exist on disk, THEN THE Tauri App SHALL use default values for all configuration parameters

@@ -70,12 +70,12 @@ impl ModelConfig {
     ) -> Result<SessionBuilder> {
         #[cfg(any(
             feature = "cuda",
-            feature = "tensorrt",
+            //feature = "tensorrt",
             feature = "coreml",
-            feature = "directml",
-            feature = "rocm",
+            //feature = "directml",
+            //feature = "rocm",
             feature = "openvino",
-            feature = "webgpu"
+            //feature = "webgpu"
         ))]
         use ort::execution_providers::CPUExecutionProvider;
 
@@ -113,11 +113,11 @@ impl ModelConfig {
                 ])?
             }
 
-            #[cfg(feature = "directml")]
-            ExecutionProvider::DirectML => builder.with_execution_providers([
-                ort::execution_providers::DirectMLExecutionProvider::default().build(),
-                CPUExecutionProvider::default().build().error_on_failure(),
-            ])?,
+            //#[cfg(feature = "directml")]
+            //ExecutionProvider::DirectML => builder.with_execution_providers([
+            //    ort::execution_providers::DirectMLExecutionProvider::default().build(),
+            //    CPUExecutionProvider::default().build().error_on_failure(),
+            //])?,
 
             //#[cfg(feature = "rocm")]
             //ExecutionProvider::ROCm => builder.with_execution_providers([

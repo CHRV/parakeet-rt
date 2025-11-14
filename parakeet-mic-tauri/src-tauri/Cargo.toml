@@ -23,3 +23,26 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Audio capture
+cpal = "0.15"
+
+# Audio resampling
+dasp_signal = "0.11"
+dasp_interpolate = { version = "0.11", features = ["sinc"] }
+dasp_ring_buffer = "0.11"
+
+# Local workspace crates
+parakeet = { path = "../../crates/parakeet" }
+frame-processor = { path = "../../crates/frame-processor" }
+
+# Ring buffer for audio/token passing
+rtrb = "0.3.2"
+
+# Async runtime with full features (Tauri uses tokio by default)
+tokio = { version = "1.48.0", features = ["full"] }
+
+# Error handling
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"

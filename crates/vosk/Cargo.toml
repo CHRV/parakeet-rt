@@ -2,9 +2,18 @@
 name = "vosk-rt"
 version = "0.1.0"
 edition = "2024"
+build = "build.rs"
 
 [dependencies]
 cpal = "0.16.0"
 dasp = "0.11.0"
 hound = "3.5.1"
 vosk = "0.3.1"
+
+[features]
+default = ["vosk-libvosk"]
+vosk-libvosk = []
+
+[[example]]
+name = "mic"
+required-features = ["vosk-libvosk"]

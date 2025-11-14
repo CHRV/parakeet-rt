@@ -106,14 +106,10 @@ struct Args {
 /// is automatically dropped. The processing thread detects this abandonment via
 /// `audio_consumer.is_abandoned()` and gracefully processes remaining buffered data
 /// before shutting down. No explicit coordination is needed.
-#[tracing::instrument(skip(
-    device,
-    config,
-    audio_producer,
-    audio_writer,
-    health_monitor,
-    shutdown
-))]
+#[tracing::instrument(
+    skip(device, config, audio_producer, audio_writer, health_monitor, shutdown),
+    ret
+)]
 fn recording_thread(
     device: Device,
     config: StreamConfig,

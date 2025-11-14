@@ -1,9 +1,11 @@
+#![cfg(feature = "vosk-libvosk")]
+
 //! Run with:
-//! cargo run --example microphone <model path> <duration>
-//! e.g. "cargo run --example microphone /home/user/stt/model 10"
+//! cargo run --example mic --features vosk-libvosk -- <model path> <duration>
+//! e.g. "cargo run --example mic --features vosk-libvosk -- /home/user/stt/model 10"
 //!
-//! Read the "Setup" section in the README to know how to link the vosk dynamic
-//! libaries to the examples
+//! This example uses libvosk.so for speech recognition
+//! Make sure LD_LIBRARY_PATH includes the vosk-linux-x86-0.3.42 directory
 
 use std::{
     env,

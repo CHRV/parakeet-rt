@@ -15,8 +15,8 @@ pub enum ExecutionProvider {
     Cuda,
     //#[cfg(feature = "tensorrt")]
     //TensorRT,
-    //#[cfg(feature = "coreml")]
-    //CoreML,
+    #[cfg(feature = "coreml")]
+    CoreML,
     //#[cfg(feature = "directml")]
     //DirectML,
     //#[cfg(feature = "rocm")]

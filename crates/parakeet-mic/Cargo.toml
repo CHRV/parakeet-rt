@@ -22,6 +22,9 @@ hound = "3.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Audio resampling
+rubato = "0.15"
+
 [features]
 openvino = ["parakeet/openvino"]
 coreml = ["parakeet/coreml"]

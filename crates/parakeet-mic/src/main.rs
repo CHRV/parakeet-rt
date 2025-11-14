@@ -1,12 +1,15 @@
 use anyhow::{anyhow, Result};
 use clap::Parser;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Device, Host, Sample, SampleFormat, SampleRate, Stream, StreamConfig};
+use cpal::{Device, Host, Sample, SampleFormat, Stream, StreamConfig};
 use frame_processor::FrameProcessor;
 use parakeet::execution::ModelConfig as ExecutionConfig;
 use parakeet::model::ParakeetTDTModel;
 use parakeet::streaming::{ContextConfig, StreamingParakeetTDT, TokenResult};
 use parakeet::vocab::Vocabulary;
+use rubato::{
+    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -129,6 +132,7 @@ fn recording_thread(
     );
 
     // Build the audio input stream (moves audio_producer into the closure)
+    let native_sample_rate = default_config.sample_rate().0;
     let stream = match sample_format {
         SampleFormat::F32 => build_audio_stream::<f32>(
             &device,
@@ -137,6 +141,7 @@ fn recording_thread(
             audio_writer,
             health_monitor,
             channels,
+            native_sample_rate,
         )?,
         SampleFormat::I16 => build_audio_stream::<i16>(
             &device,
@@ -145,6 +150,7 @@ fn recording_thread(
             audio_writer,
             health_monitor,
             channels,
+            native_sample_rate,
         )?,
         SampleFormat::U16 => build_audio_stream::<u16>(
             &device,
@@ -153,6 +159,7 @@ fn recording_thread(
             audio_writer,
             health_monitor,
             channels,
+            native_sample_rate,
         )?,
         _ => return Err(anyhow!("Unsupported sample format: {:?}", sample_format)),
     };
@@ -182,6 +189,7 @@ fn build_audio_stream<T>(
     audio_writer: AudioWriter,
     health_monitor: Arc<Mutex<AudioHealthMonitor>>,
     channels: usize,
+    native_sample_rate: u32,
 ) -> Result<Stream>
 where
     T: cpal::Sample + cpal::SizedSample + Send + 'static,
@@ -191,10 +199,55 @@ where
     let mut sample_counter = 0usize;
     const TRACE_INTERVAL: usize = 16000; // Every 1 second at 16kHz
 
+    // Target sample rate for the model (always 16kHz)
+    const TARGET_SAMPLE_RATE: u32 = 16000;
+
+    // Create resampler state if native sample rate differs from target
+    let needs_resampling = native_sample_rate != TARGET_SAMPLE_RATE;
+    let mut sample_buffer: Vec<f32> = Vec::new();
+
+    // Minimum buffer size: 100ms of audio at native sample rate
+    let min_buffer_samples = (native_sample_rate as f32 * 0.1) as usize;
+
+    // Create rubato resampler if needed
+    let mut resampler = if needs_resampling {
+        let params = SincInterpolationParameters {
+            sinc_len: 256,
+            f_cutoff: 0.95,
+            interpolation: SincInterpolationType::Linear,
+            oversampling_factor: 256,
+            window: WindowFunction::BlackmanHarris2,
+        };
+
+        match SincFixedIn::<f32>::new(
+            TARGET_SAMPLE_RATE as f64 / native_sample_rate as f64,
+            2.0,
+            params,
+            min_buffer_samples,
+            1, // mono
+        ) {
+            Ok(r) => {
+                tracing::info!(
+                    native_rate = native_sample_rate,
+                    target_rate = TARGET_SAMPLE_RATE,
+                    chunk_size = min_buffer_samples,
+                    "Resampling enabled with rubato"
+                );
+                Some(r)
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to create resampler");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let stream = device.build_input_stream(
         config,
         move |data: &[T], _: &cpal::InputCallbackInfo| {
-            // Convert to mono by averaging channels
+            // Convert to mono by averaging channels and collect into buffer
             for chunk in data.chunks(channels) {
                 let mono_sample = if channels == 1 {
                     f32::from_sample(chunk[0])
@@ -202,42 +255,111 @@ where
                     let sum: f32 = chunk.iter().map(|&s| f32::from_sample(s)).sum();
                     sum / channels as f32
                 };
+                sample_buffer.push(mono_sample);
+            }
 
-                // Process sample through health monitor
-                if let Ok(mut monitor) = health_monitor.lock() {
-                    let status = monitor.process_sample(mono_sample);
-                    match status {
-                        HealthStatus::SilenceDetected => {
-                            // Only display message if throttle period has passed
-                            if monitor.should_display_message() {
-                                eprint!(
-                                    "{}",
-                                    format_silence_warning(monitor.timeout_secs, monitor.threshold)
-                                );
+            // Apply resampling if needed
+            if let Some(ref mut resampler) = resampler {
+                // Only process if we have at least the required chunk size
+                if sample_buffer.len() >= min_buffer_samples {
+                    // Prepare input for rubato (needs Vec<Vec<f32>> for channels)
+                    let input_frames = vec![sample_buffer
+                        .drain(..min_buffer_samples)
+                        .collect::<Vec<f32>>()];
+
+                    // Process resampling
+                    match resampler.process(&input_frames, None) {
+                        Ok(output_frames) => {
+                            // Process all resampled output (output_frames[0] is the mono channel)
+                            for &resampled_sample in &output_frames[0] {
+                                // Process sample through health monitor
+                                if let Ok(mut monitor) = health_monitor.lock() {
+                                    let status = monitor.process_sample(resampled_sample);
+                                    match status {
+                                        HealthStatus::SilenceDetected => {
+                                            // Only display message if throttle period has passed
+                                            if monitor.should_display_message() {
+                                                eprint!(
+                                                    "{}",
+                                                    format_silence_warning(
+                                                        monitor.timeout_secs,
+                                                        monitor.threshold
+                                                    )
+                                                );
+                                            }
+                                        }
+                                        HealthStatus::AudioResumed => {
+                                            // Only display message if throttle period has passed
+                                            if monitor.should_display_message() {
+                                                eprint!("{}", format_audio_resumed());
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+
+                                // Send sample to streaming engine (warn if buffer is full)
+                                if audio_producer.push(resampled_sample).is_err() {
+                                    tracing::warn!("Audio buffer full, dropping samples");
+                                }
+
+                                // Write sample to audio file (trace errors to avoid blocking)
+                                if let Err(e) = audio_writer.write_sample(resampled_sample) {
+                                    tracing::trace!(error = %e, "Failed to write audio sample");
+                                }
+
+                                // Increment sample counter for periodic statistics
+                                sample_counter += 1;
                             }
                         }
-                        HealthStatus::AudioResumed => {
-                            // Only display message if throttle period has passed
-                            if monitor.should_display_message() {
-                                eprint!("{}", format_audio_resumed());
-                            }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Resampling error");
                         }
-                        _ => {}
                     }
                 }
+                // If buffer is less than chunk size, keep accumulating
+            } else {
+                // No resampling needed - push samples directly
+                for sample in sample_buffer.drain(..) {
+                    // Process sample through health monitor
+                    if let Ok(mut monitor) = health_monitor.lock() {
+                        let status = monitor.process_sample(sample);
+                        match status {
+                            HealthStatus::SilenceDetected => {
+                                // Only display message if throttle period has passed
+                                if monitor.should_display_message() {
+                                    eprint!(
+                                        "{}",
+                                        format_silence_warning(
+                                            monitor.timeout_secs,
+                                            monitor.threshold
+                                        )
+                                    );
+                                }
+                            }
+                            HealthStatus::AudioResumed => {
+                                // Only display message if throttle period has passed
+                                if monitor.should_display_message() {
+                                    eprint!("{}", format_audio_resumed());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
 
-                // Send sample to streaming engine (warn if buffer is full)
-                if audio_producer.push(mono_sample).is_err() {
-                    tracing::warn!("Audio buffer full, dropping samples");
+                    // Send sample to streaming engine (warn if buffer is full)
+                    if audio_producer.push(sample).is_err() {
+                        tracing::warn!("Audio buffer full, dropping samples");
+                    }
+
+                    // Write sample to audio file (trace errors to avoid blocking)
+                    if let Err(e) = audio_writer.write_sample(sample) {
+                        tracing::trace!(error = %e, "Failed to write audio sample");
+                    }
+
+                    // Increment sample counter for periodic statistics
+                    sample_counter += 1;
                 }
-
-                // Write sample to audio file (trace errors to avoid blocking)
-                if let Err(e) = audio_writer.write_sample(mono_sample) {
-                    tracing::trace!(error = %e, "Failed to write audio sample");
-                }
-
-                // Increment sample counter for periodic statistics
-                sample_counter += 1;
             }
 
             // Emit periodic statistics at trace level
@@ -404,15 +526,23 @@ fn get_audio_device(host: &Host, device_index: Option<usize>) -> Result<Device> 
     }
 }
 
-fn setup_audio_config(device: &Device, target_sample_rate: u32) -> Result<StreamConfig> {
+fn setup_audio_config(device: &Device, _target_sample_rate: u32) -> Result<StreamConfig> {
     let default_config = device.default_input_config()?;
 
-    // Try to use the target sample rate, fall back to default if not supported
-    let sample_rate = SampleRate(target_sample_rate);
+    // Use the device's native sample rate (resampling will happen in the audio callback)
+    let native_sample_rate = default_config.sample_rate();
+
+    // Validate sample rate is within reasonable bounds
+    if native_sample_rate.0 < 8000 || native_sample_rate.0 > 192000 {
+        return Err(anyhow!(
+            "Unsupported sample rate: {} Hz. Supported range: 8000-192000 Hz",
+            native_sample_rate.0
+        ));
+    }
 
     let config = StreamConfig {
         channels: 1, // Force mono
-        sample_rate,
+        sample_rate: native_sample_rate,
         buffer_size: cpal::BufferSize::Default,
     };
 
@@ -422,6 +552,15 @@ fn setup_audio_config(device: &Device, target_sample_rate: u32) -> Result<Stream
         config.sample_rate.0,
         default_config.sample_format()
     );
+
+    if native_sample_rate.0 != 16000 {
+        println!(
+            "Resampling will be applied: {} Hz → 16000 Hz",
+            native_sample_rate.0
+        );
+    } else {
+        println!("No resampling needed (native rate matches target)");
+    }
 
     Ok(config)
 }

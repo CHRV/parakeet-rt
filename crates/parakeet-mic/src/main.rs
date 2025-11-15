@@ -101,6 +101,10 @@ struct Args {
     /// Timeout in seconds before warning about no audio input
     #[arg(long, default_value = "10.0")]
     silence_timeout: f32,
+
+    /// Number of intra-op threads for ONNX Runtime (defaults to 4)
+    #[arg(long, default_value = "4")]
+    intra_threads: usize,
 }
 
 /// Recording thread that captures audio from microphone
@@ -663,10 +667,10 @@ async fn main() -> Result<()> {
 
     // Load the TDT model
     println!("Loading TDT model from {}...", args.models);
-    let exec_config = ExecutionConfig::default();
+    let exec_config = ExecutionConfig::default().with_intra_threads(args.intra_threads);
     let model = ParakeetTDTModel::from_pretrained(&args.models, exec_config)?;
     println!("✓ Model loaded successfully");
-    tracing::info!("Model loaded successfully");
+    tracing::info!(intra_threads = args.intra_threads, "Model loaded successfully");
 
     // Load vocabulary
     let vocab_path = Path::new(&args.models).join("vocab.txt");

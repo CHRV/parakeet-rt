@@ -168,7 +168,7 @@ fn recording_thread(
     tracing::debug!("Audio stream started");
 
     // Keep recording until shutdown signal
-    while !shutdown.load(Ordering::Relaxed) {
+    while !shutdown.load(Ordering::SeqCst) {
         thread::sleep(Duration::from_millis(100));
     }
 
@@ -422,7 +422,7 @@ fn output_thread(
     let mut token_count = 0;
 
     // Continue until shutdown AND no more tokens available
-    while !shutdown.load(Ordering::Relaxed) || token_consumer.slots() > 0 {
+    while !shutdown.load(Ordering::SeqCst) || token_consumer.slots() > 0 {
         // Read tokens from the consumer
         let mut new_tokens = Vec::new();
         while let Ok(token_result) = token_consumer.pop() {
@@ -743,7 +743,7 @@ async fn main() -> Result<()> {
 
     ctrlc::set_handler(move || {
         println!("\nShutdown signal received...");
-        shutdown_clone.store(true, Ordering::Relaxed);
+        shutdown_clone.store(true, Ordering::SeqCst);
     })?;
 
     println!("✓ Audio capture ready");
@@ -757,14 +757,17 @@ async fn main() -> Result<()> {
         let audio_writer_clone = audio_writer.clone();
         let health_monitor_clone = health_monitor.clone();
         thread::spawn(move || {
-            recording_thread(
+            let res = recording_thread(
                 device,
                 config,
                 audio_producer,
                 audio_writer_clone,
                 health_monitor_clone,
-                shutdown,
-            )
+                shutdown.clone(),
+            );
+
+            shutdown.store(true, Ordering::SeqCst);
+            res
         })
     };
 
